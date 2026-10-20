@@ -40,7 +40,7 @@ test('2×2 模組：格數與容量', () => {
   assert.ok(r.info.capacity >= r.info.required);
   assert.equal(r.counts.side, 8);
   assert.equal(r.counts.clip, 8); // 1 條垂直接縫 × 2 列 × (上 2 + 下 2)
-  assert.equal(r.counts.key, 4); // 1 條水平接縫 × 2 欄 × 左右
+  assert.equal(r.counts.splice, 4); // 1 條垂直接縫 × 2 欄 × 左右
   assert.equal(r.cans.length, GRID.kinds * GRID.perKind);
   assert.ok(r.mounts.every((m) => m.valid));
   const keyholes = r.parts.flatMap((p) => p.holes).filter((h) => h.mount != null);
@@ -81,7 +81,7 @@ test('單一模組（不延伸）沒有卡扣與卡榫', () => {
   assert.equal(r.info.mx, 1);
   assert.equal(r.info.my, 1);
   assert.equal(r.counts.clip, undefined);
-  assert.equal(r.counts.key, undefined);
+  assert.equal(r.counts.splice, undefined);
 });
 
 test('匯出 SVG / DXF / BOM', () => {
@@ -167,4 +167,49 @@ test('隨機參數組合都能產生零件且無例外', () => {
     assert.ok(r.info.capacity >= r.info.required);
     for (const p of r.parts) assert.ok(p.outer.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)), p.name);
   }
+});
+
+test('多架組裝：模組、連接件、罐數與五金都跟著倍增', () => {
+  const one = buildRack(DEFAULTS, []);
+  const many = buildRack({ ...DEFAULTS, racksX: 3, racksY: 2 }, []);
+  assert.equal(many.info.mx, one.info.mx * 3);
+  assert.equal(many.info.my, one.info.my * 2);
+  assert.equal(many.cans.length, one.cans.length * 6);
+  assert.equal(many.counts.clip, (3 - 1) * 2 * 4);
+  assert.equal(many.counts.splice, 3 * (2 - 1) * 2);
+  const bolts = many.info.hardware.filter((h) => h.name.includes('螺栓')).reduce((n, h) => n + h.qty, 0);
+  assert.equal(bolts, (3 - 1) * 2 * many.info.rows + 3 * 1 * 8);
+});
+
+test('垂直連接板螺栓孔與上下模組側板的孔對齊', () => {
+  const r = buildRack({ ...DEFAULTS, racksY: 2 }, []);
+  const world = (p, [u, v]) => p.origin.map((o, k) => o + u * p.U[k] + v * p.V[k]);
+  const splice = r.parts.find((p) => p.kind === 'splice');
+  const sides = r.parts.filter((p) => p.kind === 'side');
+  for (const h of splice.holes) {
+    const w = world(splice, h.c);
+    const match = sides.some((sd) => sd.holes.some((sh) => {
+      if (sh.type !== 'circle') return false;
+      const q = world(sd, sh.c);
+      return Math.abs(q[1] - w[1]) < 1e-6 && Math.abs(q[2] - w[2]) < 1e-6 && Math.abs(Math.abs(q[0] - w[0]) - r.layout.t) < 1e-6;
+    }));
+    assert.ok(match, `連接板孔 ${w} 沒有對到側板孔`);
+  }
+});
+
+test('連接板不碰到卡扣腳、頂板與背板', () => {
+  const L = deriveLayout(DEFAULTS);
+  assert.ok(L.spliceZ[0] > L.clipZ[0] + L.t / 2, '在後卡扣之前');
+  assert.ok(L.spliceZ[1] < L.clipZ[1] - L.t / 2, '在前卡扣之後');
+  assert.ok(L.spliceZ[0] > 2 * L.t, '在背板前方');
+  assert.ok(L.H - L.spliceHalfH > L.topY + L.t, '在頂板上方');
+});
+
+test('板材計算機連結帶入尺寸、張數、板厚', async () => {
+  const { calculatorUrl } = await import('../src/calculator-link.js');
+  const u = new URL(calculatorUrl({ sheetW: 600, sheetH: 900, count: 3, thickness: 9 }));
+  assert.equal(u.searchParams.get('mode'), 'piece');
+  assert.equal(u.searchParams.get('w'), '600');
+  assert.equal(u.searchParams.get('n'), '3');
+  assert.equal(u.searchParams.get('t'), '9');
 });

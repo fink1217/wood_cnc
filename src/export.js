@@ -128,7 +128,7 @@ export function toDXF(layout) {
   return L.join('\n') + '\n';
 }
 
-const KIND_NAMES = { side: '側板', back: '背板', shelf: '層板', holeplate: '固定孔板', top: '頂板', clip: 'U 型卡扣', key: '雙鳩尾卡榫' };
+const KIND_NAMES = { side: '側板', back: '背板', shelf: '層板', holeplate: '固定孔板', top: '頂板', clip: 'U 型卡扣', splice: '垂直連接板' };
 
 export function toBOM(rack) {
   const groups = new Map();
@@ -142,7 +142,8 @@ export function toBOM(rack) {
   for (const g of groups.values()) {
     rows.push([KIND_NAMES[g.kind] || g.kind, g.qty, g.w.toFixed(1), g.h.toFixed(1), g.t, g.kind === 'back' ? `掛孔 ${g.keyholes} 個` : '']);
   }
-  return '﻿' + rows.map((r) => r.join(',')).join('\n') + '\n';
+  for (const h of rack.info.hardware || []) rows.push([h.name, h.qty, '', '', '', h.use]);
+  return '\ufeff' + rows.map((r) => r.join(',')).join('\n') + '\n';
 }
 
 export { KIND_NAMES };

@@ -11,6 +11,8 @@
   --ok: #2f9e6b;
   --label-bg: rgba(35, 33, 30, 0.82);
   --label-text: #fff;
+  --wood: #e2c39b;
+  --wood-edge: #9a7650;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -22,6 +24,8 @@
     --field-hover: rgba(255, 255, 255, 0.11);
     --label-bg: rgba(250, 249, 247, 0.9);
     --label-text: #1b1a18;
+    --wood: #8d6c49;
+    --wood-edge: #d9b98f;
     color-scheme: dark;
   }
 }
@@ -34,6 +38,8 @@
     --field-hover: rgba(255, 255, 255, 0.11);
     --label-bg: rgba(250, 249, 247, 0.9);
     --label-text: #1b1a18;
+    --wood: #8d6c49;
+    --wood-edge: #d9b98f;
     color-scheme: dark;
 }
 
@@ -53,8 +59,19 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   overflow-y: auto; overflow-x: hidden; padding: 4px 18px 18px; scrollbar-width: thin;
   transition: transform 0.25s ease;
 }
-#sidebar.collapsed { transform: translateX(calc(100% - 44px)); }
-#sidebar.collapsed #collapse { transform: rotate(180deg); }
+#sidebar.collapsed { transform: translateX(calc(100% + 40px)); visibility: hidden; transition: transform 0.25s ease, visibility 0s 0.25s; }
+
+/* 側欄開關：放在側欄外面，收合後仍可點 */
+#sidebar-toggle {
+  position: fixed; z-index: 5; top: calc(22px + env(safe-area-inset-top, 0px)); right: calc(26px + env(safe-area-inset-right, 0px));
+  padding: 5px 11px; border-radius: 999px; font-size: 12px; color: var(--muted); background: var(--field);
+}
+#sidebar-toggle:hover { color: var(--text); background: var(--field-hover); }
+#sidebar-toggle .when-closed { display: none; }
+body.sidebar-closed #sidebar-toggle { background: var(--panel); color: var(--text); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 8px 14px; font-weight: 600; }
+body.sidebar-closed #sidebar-toggle .when-open { display: none; }
+body.sidebar-closed #sidebar-toggle .when-closed { display: inline; }
 #sidebar header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between;
   padding: 14px 0 6px; background: linear-gradient(var(--panel) 70%, transparent); }
 #sidebar h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: 0.02em; }
@@ -127,7 +144,9 @@ details.group[open] summary::before { transform: rotate(90deg); }
 @media (max-width: 640px) {
   #sidebar { top: auto; left: calc(8px + env(safe-area-inset-left, 0px)); right: calc(8px + env(safe-area-inset-right, 0px));
     bottom: calc(8px + env(safe-area-inset-bottom, 0px)); width: auto; height: 52vh; }
-  #sidebar.collapsed { transform: translateY(calc(100% - 50px)); }
+  #sidebar.collapsed { transform: translateY(calc(100% + 20px)); }
+  #sidebar-toggle { top: auto; bottom: calc(52vh - 30px + env(safe-area-inset-bottom, 0px)); right: calc(20px + env(safe-area-inset-right, 0px)); }
+  body.sidebar-closed #sidebar-toggle { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
 }
 
 #export-msg { margin: 4px 0 8px; font-size: 12px; }
@@ -147,3 +166,23 @@ details.group[open] summary::before { transform: rotate(90deg); }
 .auto-btn:hover { background: var(--accent); filter: brightness(1.08); }
 #sidebar summary .hint { font-weight: 400; margin-left: 6px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 連接件與材料表 */
+.thumb-list { display: grid; gap: 6px; }
+.thumb-row { display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; align-items: center; padding: 6px 8px; margin: 0 -8px; border-radius: 10px; }
+.thumb-row:hover { background: var(--field); }
+.thumb-row svg { width: 64px; height: 44px; display: block; }
+.thumb-row .name { font-weight: 600; }
+.thumb-row .sub { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.thumb-row .qty { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.part-shape { fill: var(--wood); stroke: var(--wood-edge); stroke-width: 1.2; vector-effect: non-scaling-stroke; fill-rule: evenodd; }
+.hw-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.hw-table td { padding: 4px 4px; vertical-align: top; }
+.hw-table td:last-child { text-align: right; font-weight: 600; white-space: nowrap; }
+.hw-table tr:nth-child(even) td { background: var(--field); }
+.hw-table .use { color: var(--muted); font-size: 11px; display: block; }
+.sheets { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; margin-top: 8px; }
+.sheet-card { background: var(--field); border-radius: 8px; padding: 6px; text-align: center; font-size: 11px; color: var(--muted); }
+.sheet-card svg { width: 100%; height: auto; display: block; background: var(--bg); border-radius: 4px; margin-bottom: 4px; }
+.sheet-card .cut { fill: var(--wood); stroke: var(--wood-edge); stroke-width: 0.8; vector-effect: non-scaling-stroke; fill-rule: evenodd; }
+.calc-link { display: block; text-decoration: none; text-align: center; margin-top: 10px; }

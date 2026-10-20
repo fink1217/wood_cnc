@@ -2,8 +2,8 @@
 //
 // 世界座標 (mm)：X = 寬（左→右）、Y = 高（下→上）、Z = 深（牆面 z=0 往外）。
 // 每個模組 = 左右側板 + 背板 + 每列（層板 + 固定孔板）+ 頂板。
-// 模組之間：水平延伸用 U 型卡扣（側板上下緣卡槽）+ 可選螺栓鎖點孔；
-//           垂直堆疊用雙鳩尾卡榫（側板上下緣鳩尾槽）。
+// 模組之間：水平延伸用 U 型卡扣（側板上下緣卡槽）+ 螺栓鎖點孔；
+//           垂直堆疊用垂直連接板（貼在上下側板內側，螺栓鎖緊）。
 // 所有模組都切出延伸槽，日後可隨時再往旁邊或上方擴充。
 
 import { dogbone, rectCW, keyholeCW, bbox, rectsOverlap } from './geometry.js';
@@ -23,6 +23,8 @@ export const DEFAULTS = {
   sheet: '1220x2440',
   screw: '4',
   bolt: 'M6',
+  racksX: 1,
+  racksY: 1,
   canGap: null,
   holeClearance: null,
   retainHeight: null,
@@ -49,9 +51,14 @@ export const BASIC_SPEC = [
 
 export const CHOICE_SPEC = [
   { key: 'bit', label: '銑刀', options: [['0', '不清角'], ['3.175', '1/8″ (3.175)'], ['6', '6 mm'], ['6.35', '1/4″ (6.35)']] },
-  { key: 'sheet', label: '板材', options: [['1220x2440', '4×8 尺 (1220×2440)'], ['910x1820', '3×6 尺 (910×1820)'], ['600x900', '600×900'], ['600x600', '600×600']] },
+  { key: 'sheet', label: 'CNC 板材', options: [['1220x2440', '4×8 尺 (1220×2440)'], ['1220x3050', '4×10 尺 (1220×3050)'], ['915x1830', '3×6 尺 (915×1830)'], ['915x2135', '3×7 尺 (915×2135)'], ['600x900', 'CNC 小板 600×900'], ['600x600', 'CNC 小板 600×600']] },
   { key: 'screw', label: '掛牆螺絲', options: [['3.5', '3.5 mm'], ['4', '4 mm'], ['5', '5 mm']] },
-  { key: 'bolt', label: '模組鎖點', options: [['none', '不開孔'], ['M4', 'M4 螺栓'], ['M5', 'M5 螺栓'], ['M6', 'M6 螺栓']] },
+  { key: 'bolt', label: '連接螺栓', options: [['M4', 'M4'], ['M5', 'M5'], ['M6', 'M6']] },
+];
+
+export const ASSEMBLY_SPEC = [
+  { key: 'racksX', label: '水平並排幾架', unit: '架', min: 1, max: 8, step: 1, int: true },
+  { key: 'racksY', label: '垂直堆疊幾架', unit: '架', min: 1, max: 8, step: 1, int: true },
 ];
 
 export const ADVANCED_SPEC = [
@@ -77,7 +84,7 @@ const r2 = (v) => Math.round(v * 1000) / 1000;
 /** 清理輸入：基本欄位夾到合法範圍；進階欄位 null/空字串 = 自動 */
 export function normalizeParams(input = {}) {
   const P = { ...DEFAULTS };
-  for (const spec of BASIC_SPEC) {
+  for (const spec of [...BASIC_SPEC, ...ASSEMBLY_SPEC]) {
     const n = Number(input[spec.key]);
     if (input[spec.key] !== undefined && input[spec.key] !== '' && input[spec.key] !== null && Number.isFinite(n)) {
       P[spec.key] = clampNum(spec.int ? Math.round(n) : n, spec.min, spec.max);
@@ -148,16 +155,19 @@ export function resolveParams(input = {}) {
 
   const liftClear = resolve('liftClear', 5, '預設 5mm');
 
-  const margin = resolve('margin', Math.max(16, Math.round(t * 1.5 + 10)), '板厚 × 1.5 + 10',
-    [['min', Math.max(14, Math.ceil(t + 6)), '要容納延伸卡扣與卡榫']]);
+  const bolt = Number(raw.bolt.slice(1));
+  const boltHole = bolt + 0.5;
+  const margin = resolve('margin', Math.max(18, Math.round(t * 1.5 + 10), Math.ceil(14 + boltHole * 1.5)), '依板厚與螺栓',
+    [['min', Math.max(14, Math.ceil(t + 6), Math.ceil(12 + boltHole)), '要容納延伸卡扣與連接板螺栓']]);
 
   // 深度需同時放得下罐孔與延伸接頭
   const pitch = D + canGap;
   const baseDepth = 2 * t + canGap / 2 + pitch;
-  const needDepth = Math.max(60, 2 * t + 26 + 2 * slotW + 6);
+  // 連接板位於前後兩個卡扣之間，至少要放得下兩排螺栓孔
+  const needDepth = Math.max(60, Math.ceil(2 * t + 10 + slotW + t + 4 * boltHole + 8));
   const minFront = Math.max(0, Math.ceil(needDepth - baseDepth));
-  const frontMargin = resolve('frontMargin', Math.max(10, minFront), minFront > 10 ? '加深以容納延伸卡榫' : '預設 10mm',
-    [['min', minFront, `深度至少 ${needDepth.toFixed(0)}mm 才放得下延伸卡榫`]]);
+  const frontMargin = resolve('frontMargin', Math.max(10, minFront), minFront > 10 ? '加深以容納垂直連接板' : '預設 10mm',
+    [['min', minFront, `深度至少 ${needDepth.toFixed(0)}mm 才放得下垂直連接板`]]);
 
   // 模組大小：自動時限制單一模組約 600mm 以內，並且一定要放得進板材
   const rowPitch = t + h + retainHeight + liftClear;
@@ -176,12 +186,11 @@ export function resolveParams(input = {}) {
 
   const screw = Number(raw.screw);
   const keyholeHead = r1(screw * 2 + 1.5);
-  const bolt = raw.bolt === 'none' ? 0 : Number(raw.bolt.slice(1));
 
   const P = {
     thickness: t, tolerance: tol, canDia: D, canHeight: h, kinds: raw.kinds, perKind: raw.perKind,
     canGap, holeClearance, retainHeight, liftClear, frontMargin, margin, maxCols, maxRows,
-    lockHoles: bolt > 0, lockHoleDia: bolt + 0.5,
+    racksX: raw.racksX, racksY: raw.racksY, bolt, lockHoleDia: boltHole, screw,
     keyholeHead, keyholeShank: r1(screw + 0.6), keyholeLen: keyholeHead,
     dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap, gridSnap,
   };
@@ -196,8 +205,10 @@ export function deriveLayout(input) {
   const t = P.thickness, tol = P.tolerance;
   const K = P.kinds, N = P.perKind;
 
-  const mx = Math.ceil(N / P.maxCols), cols = Math.ceil(N / mx);
-  const my = Math.ceil(K / P.maxRows), rows = Math.ceil(K / my);
+  const mxUnit = Math.ceil(N / P.maxCols), cols = Math.ceil(N / mxUnit);
+  const myUnit = Math.ceil(K / P.maxRows), rows = Math.ceil(K / myUnit);
+  // 多架組裝：整組設計重複並排／堆疊
+  const mx = mxUnit * P.racksX, my = myUnit * P.racksY;
 
   const gap = P.canGap;
   const pitch = P.canDia + gap;
@@ -239,9 +250,14 @@ export function deriveLayout(input) {
   const nd = Math.min(e * 0.4, 12); // 卡槽深
   const notchW = t + tol;
   const clipZ = [zs + 3 + notchW / 2, depth - 3 - notchW / 2];
-  const keyZ = (clipZ[0] + clipZ[1]) / 2;
-  const keyB = Math.min(30, clipZ[1] - clipZ[0] - notchW - 8);
-  const keyA = keyB * 0.6;
+  // 垂直連接板：貼在上下兩模組側板內側，介於前後卡扣之間，每個模組各 2 支螺栓
+  const spliceZ = [clipZ[0] + t / 2 + 2, clipZ[1] - t / 2 - 2];
+  const spliceMid = (spliceZ[0] + spliceZ[1]) / 2;
+  const spliceHalfH = e - 3;
+  const boltR = P.lockHoleDia / 2;
+  const boltDz = Math.max(boltR + 2, Math.min((spliceZ[1] - spliceZ[0]) / 2 - boltR - 3, 15));
+  const spliceBoltZ = [spliceMid - boltDz, spliceMid + boltDz];
+  const spliceBoltY = e / 2; // 距接縫
   const clipLeg = Math.max(4, e - nd - 4);
   const clipLegW = Math.max(6, t);
 
@@ -251,7 +267,7 @@ export function deriveLayout(input) {
     P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD, inset, zs, holeZ, depth,
     retain, rowPitch, e, innerW, W, H, plateDepth, tabL, sideTabs, backTabL, backTabs,
     shelfY, holePlateY, topY, backSideTabL, backSideTabY, backY0, backY1,
-    nd, notchW, clipZ, keyZ, keyA, keyB, clipLeg, clipLegW, lockZ,
+    mxUnit, myUnit, nd, notchW, clipZ, spliceZ, spliceHalfH, spliceBoltZ, spliceBoltY, clipLeg, clipLegW, lockZ,
     totalW: mx * W, totalH: my * H,
   };
 }
@@ -261,16 +277,12 @@ export function deriveLayout(input) {
 function rectNotch(c, w, d) {
   return [[c - w / 2, 0], [c - w / 2, d], [c + w / 2, d], [c + w / 2, 0]];
 }
-function dovetailNotch(c, a, b, d) {
-  return [[c - a / 2, 0], [c - b / 2, d], [c + b / 2, d], [c + a / 2, 0]];
-}
 
 // 側板：2D (u = z 深度, v = y 高度)
 function sidePanelShape(L) {
   const { t, tol, depth: D, H } = L;
   const notches = [
     ...rectNotch(L.clipZ[0], L.notchW, L.nd),
-    ...dovetailNotch(L.keyZ, L.keyA, L.keyB, L.nd),
     ...rectNotch(L.clipZ[1], L.notchW, L.nd),
   ];
   const bottom = notches.map(([s, d]) => [s, d]);
@@ -286,7 +298,11 @@ function sidePanelShape(L) {
   }
   for (const yc of L.backSideTabY) {
     holes.push({ type: 'poly', pts: rectCW(L.inset - tol / 2, yc - L.backSideTabL / 2 - tol / 2, L.inset + t + tol / 2, yc + L.backSideTabL / 2 + tol / 2) });
-    if (L.P.lockHoles) holes.push({ type: 'circle', c: [L.lockZ, yc], r: L.P.lockHoleDia / 2 });
+    holes.push({ type: 'circle', c: [L.lockZ, yc], r: L.P.lockHoleDia / 2 });
+  }
+  // 上下邊距的垂直連接板螺栓孔（每片側板都切，方便日後往上延伸）
+  for (const z of L.spliceBoltZ) {
+    for (const y of [L.spliceBoltY, H - L.spliceBoltY]) holes.push({ type: 'circle', c: [z, y], r: L.P.lockHoleDia / 2 });
   }
   return { outer, holes };
 }
@@ -340,10 +356,14 @@ function clipShape(L) {
   };
 }
 
-// 雙鳩尾卡榫：2D 以 (0,0) 為中心，u 沿深度、v 沿高度
-function keyShape(L) {
-  const kA = L.keyA - L.tol, kB = L.keyB - L.tol, kH = L.nd - L.tol / 2;
-  return { outer: [[-kB / 2, -kH], [kB / 2, -kH], [kA / 2, 0], [kB / 2, kH], [-kB / 2, kH], [-kA / 2, 0]], holes: [] };
+// 垂直連接板：2D (u = z 深度, v = y，以接縫為 0)
+function spliceShape(L) {
+  const [z0, z1] = L.spliceZ, h = L.spliceHalfH;
+  const holes = [];
+  for (const z of L.spliceBoltZ) {
+    for (const y of [-L.spliceBoltY, L.spliceBoltY]) holes.push({ type: 'circle', c: [z, y], r: L.P.lockHoleDia / 2 });
+  }
+  return { outer: [[z0, -h], [z1, -h], [z1, h], [z0, h]], holes };
 }
 
 // --- 牆面掛點 -------------------------------------------------------------
@@ -413,7 +433,7 @@ export function buildRack(input, mounts = []) {
   const backBase = backPanelBase(L);
   const clipRaw = clipShape(L);
   const clip = finish(clipRaw);
-  const key = finish(keyShape(L));
+  const splice = finish(spliceShape(L));
 
   const mountInfo = mounts.map((m) => ({ ...m, ...validateMount(L, m.x, m.y) }));
   for (const m of mountInfo) if (!m.valid) warnings.push(`掛點 #${m.id ?? '?'}：${m.reason}，不會切出掛孔`);
@@ -456,12 +476,12 @@ export function buildRack(input, mounts = []) {
       });
     }
   }
-  // 垂直延伸卡榫（上下模組側板之間）
+  // 垂直連接板（貼在上下模組側板內側，螺栓鎖緊）
   for (let j = 0; j < L.my - 1; j++) {
     for (let i = 0; i < L.mx; i++) {
       const x0 = i * L.W, yj = (j + 1) * L.H;
-      add(`卡榫 V${i + 1}-${j + 1}|${j + 2} 左`, 'key', key, [i, j], [x0 + t, yj, L.keyZ], Z, Y, [-0.6, 0, 1]);
-      add(`卡榫 V${i + 1}-${j + 1}|${j + 2} 右`, 'key', key, [i, j], [x0 + L.W, yj, L.keyZ], Z, Y, [0.6, 0, 1]);
+      add(`連接板 V${i + 1}-${j + 1}|${j + 2} 左`, 'splice', splice, [i, j], [x0 + 2 * t, yj, 0], Z, Y, [0.8, 0, 1]);
+      add(`連接板 V${i + 1}-${j + 1}|${j + 2} 右`, 'splice', splice, [i, j], [x0 + L.W - t, yj, 0], Z, Y, [-0.8, 0, 1]);
     }
   }
 
@@ -470,10 +490,10 @@ export function buildRack(input, mounts = []) {
   for (let j = 0; j < L.my; j++) {
     for (let i = 0; i < L.mx; i++) {
       for (let rI = 0; rI < L.rows; rI++) {
-        const kind = j * L.rows + rI;
+        const kind = (j % L.myUnit) * L.rows + rI; // 每一架各自放滿所有種類
         if (kind >= L.K) continue;
         for (let c = 0; c < L.cols; c++) {
-          const n = i * L.cols + c;
+          const n = (i % L.mxUnit) * L.cols + c;
           if (n >= L.N) continue;
           cans.push({
             kind, module: [i, j],
@@ -491,13 +511,22 @@ export function buildRack(input, mounts = []) {
   const counts = {};
   for (const p of parts) counts[p.kind] = (counts[p.kind] || 0) + 1;
   const capacity = L.mx * L.cols * L.my * L.rows;
+  const hJoints = (L.mx - 1) * L.my, vJoints = L.mx * (L.my - 1);
+  const boltLen = (n) => Math.ceil((n * t + P.bolt * 1.5 + 4) / 5) * 5;
+  const hardware = [
+    { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '水平鎖點（穿過相鄰兩片側板）', qty: hJoints * L.rows },
+    { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '垂直連接板（側板 + 連接板）', qty: vJoints * 2 * 4 },
+    { name: `M${P.bolt} 螺帽 + 墊片`, use: '每支螺栓一組', qty: hJoints * L.rows + vJoints * 8 },
+    { name: `${P.screw}mm 木螺絲`, use: '牆面掛點（螺絲頭需凸出牆面約 2 個板厚）', qty: mountInfo.filter((m) => m.valid).length },
+  ].filter((h) => h.qty > 0);
 
   return {
     params: P, layout: L, parts, cans, mounts: mountInfo, warnings, counts,
     info: {
       width: L.totalW, height: L.totalH, depth: L.depth,
       moduleW: L.W, moduleH: L.H, mx: L.mx, my: L.my, cols: L.cols, rows: L.rows,
-      capacity, required: L.K * L.N, holeD: L.holeD, rowPitch: L.rowPitch,
+      capacity, required: L.K * L.N * P.racksX * P.racksY, holeD: L.holeD, rowPitch: L.rowPitch,
+      racksX: P.racksX, racksY: P.racksY, hJoints, vJoints, hardware,
     },
   };
 }

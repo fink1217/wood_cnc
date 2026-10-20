@@ -17,13 +17,26 @@
 <body>
   <div id="viewport"></div>
 
+  <button id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true" title="收合側欄">
+    <span class="when-open">收合 ›</span><span class="when-closed">‹ 展開側欄</span>
+  </button>
+
   <aside id="sidebar">
     <header>
       <h1>顏料罐木架</h1>
-      <button id="collapse" class="ghost" title="收合側欄">⟩</button>
     </header>
 
     <section id="summary"></section>
+
+    <section id="params"></section>
+
+    <section>
+      <h2>多架組裝</h2>
+      <p class="hint">同一組設計重複並排或堆疊，連接件與材料表會一起更新。</p>
+      <div id="assembly" class="param-block"></div>
+    </section>
+
+    <section id="connectors"></section>
 
     <section>
       <h2>牆面掛點</h2>
@@ -50,10 +63,10 @@
       </div>
     </section>
 
+    <section id="bom"></section>
+
     <section id="hover-info"></section>
     <section id="warnings"></section>
-
-    <section id="params"></section>
 
     <section>
       <h2>匯出</h2>

@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { buildRack, deriveLayout, autoMounts, validateMount, normalizeParams, DEFAULTS, BASIC_SPEC, CHOICE_SPEC, ADVANCED_SPEC } from './rack.js';
-import { layoutParts, toSVG, toDXF, toBOM, makeZip, KIND_NAMES } from './export.js';
+import { buildRack, deriveLayout, autoMounts, validateMount, normalizeParams, DEFAULTS, BASIC_SPEC, CHOICE_SPEC, ADVANCED_SPEC, ASSEMBLY_SPEC } from './rack.js';
+import { layoutParts, flatten, toSVG, toDXF, toBOM, makeZip, KIND_NAMES } from './export.js';
+import { calculatorUrl } from './calculator-link.js';
 
 const STORE_KEY = 'paintRack.v2';
 const $ = (id) => document.getElementById(id);
@@ -71,7 +72,7 @@ tc.addEventListener('dragging-changed', (e) => {
 tc.addEventListener('objectChange', onMountDrag);
 
 const KIND_COLORS = {
-  side: 0xd9b48a, back: 0xc49a6c, shelf: 0xe4c49c, holeplate: 0xebd2ae, top: 0xe4c49c, clip: 0x6f9bd1, key: 0x5fb08a,
+  side: 0xd9b48a, back: 0xc49a6c, shelf: 0xe4c49c, holeplate: 0xebd2ae, top: 0xe4c49c, clip: 0x6f9bd1, splice: 0x5fb08a,
 };
 const materials = {};
 for (const [k, c] of Object.entries(KIND_COLORS)) materials[k] = new THREE.MeshStandardMaterial({ color: c, roughness: 0.75 });
@@ -159,6 +160,8 @@ function rebuild() {
   buildMountSpheres();
   updateOverlay();
   renderSidebar();
+  renderConnectors();
+  renderBOM();
   updateFieldNotes();
 
   if (firstBuild) { setView('iso'); firstBuild = false; }
@@ -381,6 +384,7 @@ function renderParams() {
       <div class="param-block">${ADVANCED_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
       <button id="adv-reset" class="ghost">進階全部改回自動</button>
     </details>`;
+  $('assembly').innerHTML = ASSEMBLY_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('');
   try { $('advanced').open = localStorage.getItem(STORE_KEY + '.adv') === '1'; } catch { /* 忽略 */ }
   $('advanced').addEventListener('toggle', () => {
     try { localStorage.setItem(STORE_KEY + '.adv', $('advanced').open ? '1' : '0'); } catch { /* 忽略 */ }
@@ -392,8 +396,7 @@ function renderParams() {
 }
 
 // 參數輸入事件只綁一次（renderParams 可能重複呼叫）
-{
-  const root = $('params');
+for (const root of [$('params'), $('assembly')]) {
   let timer = null;
   const schedule = () => { clearTimeout(timer); timer = setTimeout(onParamsChanged, 180); };
   root.addEventListener('input', (e) => {
@@ -454,7 +457,10 @@ function onParamsChanged() {
   state.params = normalizeParams(state.params);
   const before = rack.layout;
   const after = deriveLayout(state.params);
-  if (before.mx !== after.mx || before.my !== after.my || before.W !== after.W || before.H !== after.H) {
+  if (before.mx !== after.mx || before.my !== after.my) {
+    // 模組數改變：每個模組重新配置 2 個掛點
+    resetMounts();
+  } else if (before.W !== after.W || before.H !== after.H) {
     // 尺寸改變時，掛點維持在同一模組內的相對位置（水平比例、距模組頂端距離）
     for (const m of state.mounts) {
       const i = Math.min(before.mx - 1, Math.floor(m.x / before.W)), j = Math.min(before.my - 1, Math.floor(m.y / before.H));
@@ -534,6 +540,86 @@ function renderMounts() {
     html += `</table><p class="hint" style="margin-top:6px">掛點總跨距 X ${fmt(Math.max(...xs) - Math.min(...xs))} · Y ${fmt(Math.max(...ys) - Math.min(...ys))} mm</p>`;
     $('mount-pairs').innerHTML = html;
   } else $('mount-pairs').innerHTML = '';
+}
+
+// ---------- 零件縮圖、連接件、材料表 ----------
+function partThumb(part, w = 64, h = 44) {
+  const f = flatten(part, part.bounds.h > part.bounds.w);
+  const pad = Math.max(f.w, f.h) * 0.04;
+  const path = (pts) => 'M' + pts.map(([x, y]) => `${x.toFixed(2)} ${(f.h - y).toFixed(2)}`).join('L') + 'Z';
+  let d = path(f.outer);
+  for (const hole of f.holes) {
+    if (hole.type === 'circle') {
+      const [cx, cy] = hole.c, r = hole.r;
+      d += `M${(cx - r).toFixed(2)} ${(f.h - cy).toFixed(2)}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0Z`;
+    } else d += path(hole.pts);
+  }
+  return `<svg viewBox="${-pad} ${-pad} ${f.w + 2 * pad} ${f.h + 2 * pad}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet" aria-hidden="true"><path class="part-shape" d="${d}"/></svg>`;
+}
+
+// 依形狀分組（同種類、同尺寸、同開孔數視為同一款）
+function partGroups(filter = () => true) {
+  const groups = new Map();
+  for (const p of rack.parts.filter(filter)) {
+    const key = `${p.kind}|${p.bounds.w.toFixed(1)}|${p.bounds.h.toFixed(1)}|${p.holes.length}`;
+    const g = groups.get(key) || { part: p, qty: 0 };
+    g.qty++;
+    groups.set(key, g);
+  }
+  return [...groups.values()];
+}
+
+const thumbRow = (g, sub) => `<div class="thumb-row">${partThumb(g.part)}
+  <div><div class="name">${KIND_NAMES[g.part.kind]}</div><div class="sub">${sub}</div></div>
+  <div class="qty">×${g.qty}</div></div>`;
+
+function hardwareTable() {
+  const hw = rack.info.hardware;
+  if (!hw.length) return '';
+  return `<table class="hw-table">${hw.map((h) => `<tr><td>${h.name}<span class="use">${h.use}</span></td><td>×${h.qty}</td></tr>`).join('')}</table>`;
+}
+
+function renderConnectors() {
+  const i = rack.info;
+  const groups = partGroups((p) => p.kind === 'clip' || p.kind === 'splice');
+  const desc = {
+    clip: `卡入相鄰模組側板上下緣的槽，${i.hJoints} 條水平接縫 × 每條 4 個`,
+    splice: `貼在上下模組側板內側，每片 4 支螺栓，${i.vJoints} 條垂直接縫 × 左右 2 片`,
+  };
+  const total = i.mx * i.my;
+  $('connectors').innerHTML = `<h2>連接點</h2>
+    <p class="hint">${total} 個模組（${i.mx} × ${i.my}）${i.hJoints + i.vJoints ? `，${i.hJoints} 條水平接縫、${i.vJoints} 條垂直接縫` : '，目前不需要連接件'}。</p>
+    ${groups.length ? `<div class="thumb-list">${groups.map((g) => thumbRow(g, `${desc[g.part.kind]}<br>${g.part.bounds.w.toFixed(1)} × ${g.part.bounds.h.toFixed(1)} × ${g.part.t} mm`)).join('')}</div>` : ''}
+    ${hardwareTable()}`;
+}
+
+function sheetThumb(sheet) {
+  const W = layout.sheetW, H = layout.sheetH;
+  let d = '';
+  for (const it of sheet.items) {
+    const tr = ([u, v]) => `${(it.x + u).toFixed(1)} ${(H - it.y - v).toFixed(1)}`;
+    d += 'M' + it.flat.outer.map(tr).join('L') + 'Z';
+    for (const h of it.flat.holes) if (h.type !== 'circle') d += 'M' + h.pts.map(tr).join('L') + 'Z';
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true"><path class="cut" d="${d}"/></svg>`;
+}
+
+function renderBOM() {
+  const P = rack.params;
+  const groups = partGroups().sort((a, b) => b.part.bounds.w * b.part.bounds.h - a.part.bounds.w * a.part.bounds.h);
+  const used = layout.sheets.reduce((n, s) => n + s.items.reduce((m, it) => m + it.flat.w * it.flat.h, 0), 0);
+  const fill = used / (layout.sheets.length * P.sheetW * P.sheetH);
+  const link = calculatorUrl({ sheetW: P.sheetW, sheetH: P.sheetH, count: layout.sheets.length, thickness: P.thickness });
+  $('bom').innerHTML = `<h2>材料表</h2>
+    <div class="thumb-list">${groups.map((g) => {
+      const kh = g.part.holes.filter((h) => h.mount != null).length;
+      return thumbRow(g, `${g.part.bounds.w.toFixed(1)} × ${g.part.bounds.h.toFixed(1)} × ${g.part.t} mm${g.part.kind === 'back' ? ` · 掛孔 ${kh} 個` : ''}`);
+    }).join('')}</div>
+    <h3>五金</h3>${hardwareTable() || '<p class="hint">不需要五金。</p>'}
+    <h3>排版 · ${layout.sheets.length} 張 ${P.sheetW}×${P.sheetH}（板材利用率約 ${(fill * 100).toFixed(0)}%）</h3>
+    <div class="sheets">${layout.sheets.map((sh, k) => `<div class="sheet-card">${sheetThumb(sh)}第 ${k + 1} 張 · ${sh.items.length} 件</div>`).join('')}</div>
+    <a class="button calc-link" href="${link}" target="_blank" rel="noopener">到板材計算機：從原板裁出 ${layout.sheets.length} 張 ${P.sheetW}×${P.sheetH} ↗</a>
+    <p class="hint" style="margin-top:6px">把 CNC 用的板材尺寸、張數和板厚帶到板材計算機，算出要買幾張原板與裁切方式。</p>`;
 }
 
 function renderHover(part) {
@@ -624,7 +710,15 @@ $('explode').oninput = (e) => {
   labelRenderer.domElement.style.display = state.explode === 0 ? '' : 'none';
   if (state.explode > 0) tc.detach(); else if (state.selected != null) selectMount(state.selected);
 };
-$('collapse').onclick = () => $('sidebar').classList.toggle('collapsed');
+function setSidebar(open) {
+  $('sidebar').classList.toggle('collapsed', !open);
+  document.body.classList.toggle('sidebar-closed', !open);
+  $('sidebar-toggle').setAttribute('aria-expanded', String(open));
+  $('sidebar-toggle').title = open ? '收合側欄' : '展開側欄';
+  try { localStorage.setItem(STORE_KEY + '.sidebar', open ? '1' : '0'); } catch { /* 忽略 */ }
+}
+$('sidebar-toggle').onclick = () => setSidebar($('sidebar').classList.contains('collapsed'));
+try { if (localStorage.getItem(STORE_KEY + '.sidebar') === '0') setSidebar(false); } catch { /* 忽略 */ }
 $('mount-add').onclick = () => addMount();
 $('mount-auto').onclick = () => { resetMounts(); saveState(); rebuild(); };
 $('mount-clear').onclick = () => { state.mounts = []; state.selected = null; saveState(); rebuild(); };
