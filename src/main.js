@@ -2,9 +2,15 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { buildRack, deriveLayout, autoMounts, validateMount, normalizeParams, DEFAULTS, BASIC_SPEC, CHOICE_SPEC, ADVANCED_SPEC, ASSEMBLY_SPEC } from './rack.js';
+import {
+  buildRack, deriveLayout, autoMounts, validateMount, normalizeParams,
+  DEFAULTS, BASIC_SPEC, LINKED_BASIC_SPEC, CHOICE_SPEC, ADVANCED_SPEC, ASSEMBLY_SPEC, NAMEPLATE_MODES,
+} from './rack.js';
 import { layoutParts, flatten, toSVG, toDXF, toBOM, makeZip, KIND_NAMES } from './export.js';
 import { calculatorUrl } from './calculator-link.js';
+import { loadImage, readFileAsDataURL, textCanvas, rasterize, cropMask, maskToArtwork } from './artwork.js';
+
+const LINKED_SPECS = [...LINKED_BASIC_SPEC, ...ADVANCED_SPEC];
 
 const STORE_KEY = 'paintRack.v2';
 const $ = (id) => document.getElementById(id);
@@ -19,8 +25,13 @@ const state = {
   explode: 0,
   showCans: true,
   showDims: true,
+  // 展示名牌：image 為使用者匯入的圖片（縮小後的 data URL），沒有圖片時用文字
+  nameplate: { enabled: false, mode: 'laser', height: 60, text: 'PAINT', threshold: 128, invert: false, image: null },
 };
 loadState();
+
+// 名牌圖案處理結果（由 updateArtwork 產生）
+let artwork = { art: null, canvas: null, dataUrl: null, empty: true };
 
 let rack = null;
 let layout = null;
@@ -73,6 +84,7 @@ tc.addEventListener('objectChange', onMountDrag);
 
 const KIND_COLORS = {
   side: 0xd9b48a, back: 0xc49a6c, shelf: 0xe4c49c, holeplate: 0xebd2ae, top: 0xe4c49c, clip: 0x6f9bd1, splice: 0x5fb08a,
+  nameplate: 0xe8cfa8,
 };
 const materials = {};
 for (const [k, c] of Object.entries(KIND_COLORS)) materials[k] = new THREE.MeshStandardMaterial({ color: c, roughness: 0.75 });
@@ -96,10 +108,33 @@ function partMesh(part) {
   mesh.applyMatrix4(new THREE.Matrix4().makeBasis(U, V, W).setPosition(...part.origin));
   mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 25), edgeMat));
   mesh.userData.part = part;
+  // 名牌雕刻預覽：把黑白圖案貼在前表面（鏤空模式直接用幾何開孔呈現）
+  if (part.kind === 'nameplate' && part.artRect && part.artMode !== 'cut' && artwork.canvas) {
+    const r = part.artRect;
+    const decal = new THREE.Mesh(
+      new THREE.PlaneGeometry(r.w, r.h),
+      new THREE.MeshStandardMaterial({
+        color: part.artMode === 'laser' ? 0x4a2c16 : 0x7a5634, roughness: 0.95, transparent: true, alphaMap: invertedAlpha(artwork.canvas),
+      }),
+    );
+    decal.position.set(r.x + r.w / 2, r.y + r.h / 2, part.t + 0.2);
+    decal.raycast = () => {}; // 不參與滑鼠選取
+    mesh.add(decal);
+  }
   const wrap = new THREE.Group();
   wrap.add(mesh);
   wrap.userData.part = part;
   return wrap;
+}
+
+// 黑白圖 → alpha：墨色（黑）不透明、背景透明，看起來像燒刻的痕跡
+function invertedAlpha(canvas) {
+  const c = document.createElement('canvas');
+  c.width = canvas.width; c.height = canvas.height;
+  const ctx = c.getContext('2d');
+  ctx.filter = 'invert(1)';
+  ctx.drawImage(canvas, 0, 0);
+  return new THREE.CanvasTexture(c);
 }
 
 function disposeGroup(group) {
@@ -113,7 +148,7 @@ function disposeGroup(group) {
 let firstBuild = true;
 
 function rebuild() {
-  rack = buildRack(state.params, state.mounts);
+  rack = buildRack(state.params, state.mounts, { nameplate: { ...state.nameplate, art: artwork.art } });
   const L = rack.layout;
 
   if (tc.object) tc.detach();
@@ -162,6 +197,7 @@ function rebuild() {
   renderSidebar();
   renderConnectors();
   renderBOM();
+  renderNameplateStatus();
   updateFieldNotes();
 
   if (firstBuild) { setView('iso'); firstBuild = false; }
@@ -372,7 +408,8 @@ const fieldHTML = (spec, value, extra = '') => `
 function renderParams() {
   const root = $('params');
   root.innerHTML = `<h2>參數</h2>
-    <div class="param-block">${BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('')}</div>
+    <div class="param-block">${BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('')}
+      ${LINKED_BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
     <h3>加工與五金</h3>
     <div class="param-block">${CHOICE_SPEC.map((s) => `
       <label class="field"><span>${s.label}</span>
@@ -432,7 +469,7 @@ for (const root of [$('params'), $('assembly')]) {
 /** 依連動結果更新進階欄位的提示與自動值 */
 function updateFieldNotes() {
   const fields = rack.layout.fields;
-  for (const spec of ADVANCED_SPEC) {
+  for (const spec of LINKED_SPECS) {
     const f = fields[spec.key];
     const input = $('param-' + spec.key), note = $('note-' + spec.key);
     if (!f || !input) continue;
@@ -767,14 +804,21 @@ async function download(name, data) {
 }
 const stamp = () => `paint-rack_${rack.info.mx}x${rack.info.my}_t${rack.params.thickness}`;
 const paramsJson = () => JSON.stringify({ params: state.params, mounts: state.mounts }, null, 2);
-$('export-zip').onclick = () => download(`${stamp()}.zip`, makeZip([
-  { name: `${stamp()}.dxf`, data: toDXF(layout) },
-  { name: `${stamp()}.svg`, data: toSVG(layout) },
-  { name: `${stamp()}_BOM.csv`, data: toBOM(rack) },
-  { name: `${stamp()}.json`, data: paramsJson() },
-]));
+// 雷射名牌：SVG 內嵌黑白點陣，ZIP 另外附上 PNG
+const laserHref = () => (state.nameplate.enabled && state.nameplate.mode === 'laser' ? artwork.dataUrl : null);
+const dataUrlBytes = (url) => Uint8Array.from(atob(url.split(',')[1]), (c) => c.charCodeAt(0));
+$('export-zip').onclick = () => {
+  const files = [
+    { name: `${stamp()}.dxf`, data: toDXF(layout) },
+    { name: `${stamp()}.svg`, data: toSVG(layout, laserHref()) },
+    { name: `${stamp()}_BOM.csv`, data: toBOM(rack) },
+    { name: `${stamp()}.json`, data: paramsJson() },
+  ];
+  if (laserHref()) files.push({ name: `${stamp()}_名牌雷射.png`, data: dataUrlBytes(laserHref()) });
+  download(`${stamp()}.zip`, makeZip(files));
+};
 $('export-dxf').onclick = () => download(`${stamp()}.dxf`, toDXF(layout));
-$('export-svg').onclick = () => download(`${stamp()}.svg`, toSVG(layout));
+$('export-svg').onclick = () => download(`${stamp()}.svg`, toSVG(layout, laserHref()));
 $('export-bom').onclick = () => download(`${stamp()}_BOM.csv`, toBOM(rack));
 $('export-json').onclick = () => download(`${stamp()}.json`, paramsJson());
 $('import-json').onchange = async (e) => {
@@ -796,13 +840,139 @@ $('import-json').onchange = async (e) => {
   e.target.value = '';
 };
 
+// ---------- 展示名牌 ----------
+let artJob = 0;
+/** 依目前名牌設定（圖片或文字、門檻、反轉）產生點陣與向量圖案 */
+async function updateArtwork() {
+  const np = state.nameplate;
+  const job = ++artJob;
+  try {
+    const source = np.image ? await loadImage(np.image) : textCanvas(np.text || ' ');
+    if (job !== artJob) return;
+    // 描邊用低解析度（輪廓點數少、速度快）；雷射點陣另外用高解析度
+    const opts = { threshold: np.threshold, invert: np.invert };
+    const r = cropMask(rasterize(source, { ...opts, maxPx: 480 }));
+    if (r.empty) {
+      artwork = { art: null, canvas: null, dataUrl: null, empty: true };
+    } else {
+      const hi = np.mode === 'laser' ? cropMask(rasterize(source, { ...opts, maxPx: 3600 })) : null;
+      artwork = {
+        art: maskToArtwork(r.mask, r.w, r.h), canvas: r.canvas, empty: false,
+        dataUrl: hi && !hi.empty ? hi.canvas.toDataURL('image/png') : null,
+        laserPx: hi ? [hi.w, hi.h] : null,
+      };
+    }
+  } catch (err) {
+    artwork = { art: null, canvas: null, dataUrl: null, empty: true, error: err.message };
+  }
+  renderNameplateStatus();
+}
+
+function renderNameplate() {
+  const np = state.nameplate;
+  $('nameplate').innerHTML = `<h2>展示名牌 <span class="hint">選用</span></h2>
+    <label class="check"><input type="checkbox" id="np-enabled" ${np.enabled ? 'checked' : ''}/> 在每架頂端加一片名牌</label>
+    <div id="np-body" ${np.enabled ? '' : 'hidden'}>
+      <p class="hint">名牌立在頂板上，兩支榫頭插進頂板。可匯入圖片（Logo、手寫字），或直接打字。</p>
+      <div class="param-block">
+        <label class="field"><span>加工方式</span><span class="input"><select id="np-mode">
+          ${NAMEPLATE_MODES.map(([v, l]) => `<option value="${v}" ${np.mode === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select></span></label>
+        <label class="field"><span>名牌高度<small>高出木架頂端</small></span><span class="input"><input type="number" id="np-height" min="20" max="300" step="1" value="${np.height}"/><span class="unit">mm</span></span></label>
+        <label class="field"><span>名牌文字<small>沒有匯入圖片時使用</small></span><span class="input"><input type="text" id="np-text" value="${escapeAttr(np.text)}" maxlength="40"/></span></label>
+        <label class="field"><span>黑白門檻<small>越大，越多灰色變成墨色</small></span><input type="range" id="np-threshold" min="10" max="245" step="1" value="${np.threshold}"/></label>
+      </div>
+      <label class="check"><input type="checkbox" id="np-invert" ${np.invert ? 'checked' : ''}/> 反轉黑白（淺色圖案、深色背景時使用）</label>
+      <div class="row-buttons">
+        <label class="button">匯入圖片<input type="file" id="np-file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" hidden/></label>
+        <button id="np-clear" class="ghost" ${np.image ? '' : 'hidden'}>改用文字</button>
+      </div>
+      <div class="np-preview"><canvas id="np-canvas" width="300" height="80" aria-label="名牌圖案預覽"></canvas></div>
+      <p class="hint" id="np-status"></p>
+    </div>`;
+  const changed = (rerender = true) => {
+    saveState();
+    updateArtwork().then(() => { if (rerender) rebuild(); });
+  };
+  $('np-enabled').onchange = (e) => { np.enabled = e.target.checked; $('np-body').hidden = !np.enabled; changed(); };
+  $('np-mode').onchange = (e) => { np.mode = e.target.value; changed(); };
+  let timer = null;
+  const later = (fn) => { clearTimeout(timer); timer = setTimeout(fn, 250); };
+  $('np-height').oninput = (e) => { const v = Number(e.target.value); if (v >= 20 && v <= 300) { np.height = v; later(() => { saveState(); rebuild(); }); } };
+  $('np-text').oninput = (e) => { np.text = e.target.value; if (!np.image) later(changed); };
+  $('np-threshold').oninput = (e) => { np.threshold = Number(e.target.value); later(changed); };
+  $('np-invert').onchange = (e) => { np.invert = e.target.checked; changed(); };
+  $('np-clear').onclick = () => { np.image = null; $('np-clear').hidden = true; changed(); };
+  $('np-file').onchange = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      // 縮到 2400px 以內再存：夠雷射點陣用，也避免瀏覽器儲存空間不足
+      const img = await loadImage(await readFileAsDataURL(file));
+      const longSide = Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height);
+      // SVG 是向量圖，直接放大畫；點陣圖只縮不放
+      const s = file.type === 'image/svg+xml' ? 3000 / longSide : Math.min(1, 3000 / longSide);
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round((img.naturalWidth || img.width) * s));
+      c.height = Math.max(1, Math.round((img.naturalHeight || img.height) * s));
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      np.image = c.toDataURL('image/png');
+      $('np-clear').hidden = false;
+      changed();
+    } catch (err) {
+      $('np-status').textContent = `無法讀取圖片：${err.message}`;
+    }
+  };
+}
+
+function renderNameplateStatus() {
+  const cv = $('np-canvas'), status = $('np-status');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (artwork.error || artwork.empty) {
+    status.textContent = artwork.error ? `圖案處理失敗：${artwork.error}` : '圖案是空白的：調整黑白門檻或勾選反轉。';
+    status.className = 'hint warn';
+    return;
+  }
+  const src = artwork.canvas;
+  const s = Math.min(cv.width / src.width, cv.height / src.height);
+  const w = src.width * s, h = src.height * s;
+  ctx.drawImage(src, (cv.width - w) / 2, (cv.height - h) / 2, w, h);
+  const loops = artwork.art.loops.length;
+  const np = rack?.parts.find((p) => p.kind === 'nameplate');
+  const dpiVal = np?.artRect && artwork.laserPx ? Math.round(artwork.laserPx[0] / (np.artRect.w / 25.4)) : 0;
+  const dpi = dpiVal ? ` · 雷射約 ${dpiVal} DPI${dpiVal < 120 ? '（偏低，建議匯入更大的圖片）' : ''}` : '';
+  const size = np?.artRect ? `圖案 ${fmt(np.artRect.w)} × ${fmt(np.artRect.h)} mm${dpi} · ` : '';
+  const what = { laser: '雷射點陣（SVG 內嵌 + PNG），DXF 另附向量輪廓', engrave: '向量輪廓在 ENGRAVE 圖層，CAM 以 V 刀或平刀挖槽', cut: '圖案外框直接貫穿切出' }[state.nameplate.mode];
+  status.textContent = `${size}${loops} 條輪廓 · ${what}`;
+  status.className = 'hint';
+}
+
+function escapeAttr(s) {
+  return String(s ?? '').replace(/[&"<>]/g, (c) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c]);
+}
+
 // ---------- 儲存 ----------
 function saveState() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify({
       params: state.params, mounts: state.mounts, nextId: state.nextId, showCans: state.showCans, showDims: state.showDims,
+      nameplate: state.nameplate,
     }));
-  } catch { /* 無法儲存時忽略 */ }
+  } catch {
+    // 圖片太大存不下時，至少保留其他設定
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        params: state.params, mounts: state.mounts, nextId: state.nextId, showCans: state.showCans, showDims: state.showDims,
+        nameplate: { ...state.nameplate, image: null },
+      }));
+    } catch { /* 無法儲存時忽略 */ }
+  }
 }
 
 function loadState() {
@@ -815,6 +985,7 @@ function loadState() {
       state.nextId = d.nextId || state.mounts.reduce((a, m) => Math.max(a, m.id + 1), 1);
       state.showCans = d.showCans ?? true;
       state.showDims = d.showDims ?? true;
+      if (d.nameplate && typeof d.nameplate === 'object') state.nameplate = { ...state.nameplate, ...d.nameplate };
       return;
     }
   } catch { /* 讀取失敗則使用預設 */ }
@@ -832,7 +1003,9 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 renderParams();
+renderNameplate();
 rebuild();
+if (state.nameplate.enabled) updateArtwork().then(rebuild);
 
 renderer.setAnimationLoop(() => {
   orbit.update();
@@ -841,3 +1014,4 @@ renderer.setAnimationLoop(() => {
 });
 
 window.__rack = () => rack; // 除錯用
+window.__artUrl = () => artwork.dataUrl;

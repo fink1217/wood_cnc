@@ -28,7 +28,7 @@ export const DEFAULTS = {
   canGap: null,
   holeClearance: null,
   retainHeight: null,
-  liftClear: null,
+  topGap: null,
   frontMargin: null,
   margin: null,
   maxCols: null,
@@ -56,6 +56,11 @@ export const CHOICE_SPEC = [
   { key: 'bolt', label: '連接螺栓', options: [['M4', 'M4'], ['M5', 'M5'], ['M6', 'M6']] },
 ];
 
+// 放在基本區、但可自動連動的欄位（空白 = 自動）
+export const LINKED_BASIC_SPEC = [
+  { key: 'topGap', label: '罐頂到上層距離', unit: 'mm', min: 0, max: 300, step: 1 },
+];
+
 export const ASSEMBLY_SPEC = [
   { key: 'racksX', label: '水平並排幾架', unit: '架', min: 1, max: 8, step: 1, int: true },
   { key: 'racksY', label: '垂直堆疊幾架', unit: '架', min: 1, max: 8, step: 1, int: true },
@@ -65,7 +70,6 @@ export const ADVANCED_SPEC = [
   { key: 'canGap', label: '罐間距', unit: 'mm', min: 0, max: 40, step: 0.5 },
   { key: 'holeClearance', label: '罐孔餘隙', unit: 'mm', min: 0, max: 10, step: 0.1 },
   { key: 'retainHeight', label: '固定孔板高度', unit: 'mm', min: 0, max: 200, step: 1 },
-  { key: 'liftClear', label: '取放餘隙', unit: 'mm', min: 0, max: 50, step: 1 },
   { key: 'frontMargin', label: '前緣留邊', unit: 'mm', min: 0, max: 100, step: 1 },
   { key: 'margin', label: '側板上下邊距', unit: 'mm', min: 0, max: 80, step: 1 },
   { key: 'maxCols', label: '每模組最多欄', unit: '罐', min: 1, max: 40, step: 1, int: true },
@@ -94,7 +98,7 @@ export function normalizeParams(input = {}) {
     const v = String(input[spec.key] ?? '');
     if (spec.options.some(([o]) => o === v)) P[spec.key] = v;
   }
-  for (const spec of ADVANCED_SPEC) {
+  for (const spec of [...LINKED_BASIC_SPEC, ...ADVANCED_SPEC]) {
     const v = input[spec.key];
     const n = Number(v);
     P[spec.key] = v === null || v === undefined || v === '' || !Number.isFinite(n)
@@ -153,7 +157,9 @@ export function resolveParams(input = {}) {
     [['max', r1(h * 0.8), '不超過罐高 80%，否則難以取放'], ['min', minRetain, '孔板要高於層板：板厚 + 公差 + 3']]);
   if (minRetain > h * 0.8) warnings.push(`罐子太矮（${h}mm），以 ${t}mm 板厚很難固定；建議改用較薄板材`);
 
-  const liftClear = resolve('liftClear', 5, '預設 5mm');
+  // 罐頂到上一層底面：取罐時要先把罐子提起「固定孔板高度」才拿得出來
+  const topGap = resolve('topGap', retainHeight + 5, '固定孔板高度 + 5，剛好能提起取出',
+    [['min', r2(retainHeight + 2), `要比固定孔板高度 ${retainHeight}mm 多 2mm，罐子才提得出來`]]);
 
   const bolt = Number(raw.bolt.slice(1));
   const boltHole = bolt + 0.5;
@@ -170,7 +176,7 @@ export function resolveParams(input = {}) {
     [['min', minFront, `深度至少 ${needDepth.toFixed(0)}mm 才放得下垂直連接板`]]);
 
   // 模組大小：自動時限制單一模組約 600mm 以內，並且一定要放得進板材
-  const rowPitch = t + h + retainHeight + liftClear;
+  const rowPitch = t + h + topGap;
   const usableLong = sheetH - 2 * partGap, usableShort = sheetW - 2 * partGap;
   const colsFor = (len) => Math.floor((len - 2 * t - canGap) / pitch);
   const rowsFor = (len) => Math.floor((len - 2 * margin - t) / rowPitch);
@@ -189,7 +195,7 @@ export function resolveParams(input = {}) {
 
   const P = {
     thickness: t, tolerance: tol, canDia: D, canHeight: h, kinds: raw.kinds, perKind: raw.perKind,
-    canGap, holeClearance, retainHeight, liftClear, frontMargin, margin, maxCols, maxRows,
+    canGap, holeClearance, retainHeight, topGap, frontMargin, margin, maxCols, maxRows,
     racksX: raw.racksX, racksY: raw.racksY, bolt, lockHoleDia: boltHole, screw,
     keyholeHead, keyholeShank: r1(screw + 0.6), keyholeLen: keyholeHead,
     dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap, gridSnap,
@@ -220,7 +226,7 @@ export function deriveLayout(input) {
   const depth = holeZ + pitch / 2 + P.frontMargin;
   const retain = P.retainHeight;
 
-  const rowPitch = t + P.canHeight + retain + P.liftClear;
+  const rowPitch = t + P.canHeight + P.topGap;
   const e = P.margin;
   const innerW = cols * pitch + gap;
   const W = innerW + 2 * t;
@@ -267,7 +273,7 @@ export function deriveLayout(input) {
     P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD, inset, zs, holeZ, depth,
     retain, rowPitch, e, innerW, W, H, plateDepth, tabL, sideTabs, backTabL, backTabs,
     shelfY, holePlateY, topY, backSideTabL, backSideTabY, backY0, backY1,
-    mxUnit, myUnit, nd, notchW, clipZ, spliceZ, spliceHalfH, spliceBoltZ, spliceBoltY, clipLeg, clipLegW, lockZ,
+    mxUnit, myUnit, nd, notchW, clipZ, spliceZ, spliceMid, spliceHalfH, spliceBoltZ, spliceBoltY, clipLeg, clipLegW, lockZ,
     totalW: mx * W, totalH: my * H,
   };
 }
@@ -366,6 +372,63 @@ function spliceShape(L) {
   return { outer: [[z0, -h], [z1, -h], [z1, h], [z0, h]], holes };
 }
 
+// --- 展示名牌 -------------------------------------------------------------
+
+export const NAMEPLATE_MODES = [
+  ['laser', '雷射雕刻（點陣）'],
+  ['engrave', 'CNC 雕刻（向量輪廓）'],
+  ['cut', '鏤空（貫穿切割）'],
+];
+
+/**
+ * 名牌：立在頂板上、位於深度中間，兩支榫頭穿過頂板。
+ * 2D (u = x, v = y，v = 0 為頂板頂面)。art 為 artwork.js 的正規化圖案（寬 1、高 aspect）。
+ */
+function nameplateShape(L, opts) {
+  const { t, tol, W, innerW, e } = L;
+  const height = Math.min(300, Math.max(20, Number(opts.height) || 60));
+  const x0 = t + tol / 2, x1 = W - t - tol / 2, top = e + height;
+  const tabL = Math.min(30, innerW / 5);
+  const tabs = [0.25, 0.75].map((f) => t + innerW * f);
+  const outer = [[x0, 0]];
+  for (const xc of tabs) outer.push([xc - tabL / 2, 0], [xc - tabL / 2, -t], [xc + tabL / 2, -t], [xc + tabL / 2, 0]);
+  outer.push([x1, 0], [x1, top], [x0, top]);
+
+  const warnings = [];
+  const holes = [], engrave = [];
+  let raster = null, artRect = null;
+  const art = opts.art;
+  if (art && art.loops?.length) {
+    const m = Math.max(4, L.P.bitDia * 2);
+    const aw = x1 - x0 - 2 * m, ah = top - 2 * m;
+    const s = Math.min(aw, ah / art.aspect);
+    const ox = x0 + m + (aw - s) / 2, oy = m + (ah - s * art.aspect) / 2;
+    const loops = art.loops.map((l) => l.map(([px, py]) => [ox + px * s, oy + py * s]));
+    artRect = { x: ox, y: oy, w: s, h: s * art.aspect };
+    if (opts.mode === 'cut') {
+      let islands = 0, tiny = 0;
+      const minFeature = Math.max(1, L.P.bitDia);
+      for (const l of loops) {
+        const b = bbox(l);
+        let area = 0;
+        for (let k = 0; k < l.length; k++) {
+          const [ax, ay] = l[k], [bx, by] = l[(k + 1) % l.length];
+          area += ax * by - bx * ay;
+        }
+        if (area < 0) { islands++; continue; } // 字中間的島會掉出，不切
+        if (Math.min(b.w, b.h) < minFeature) { tiny++; continue; }
+        holes.push({ type: 'poly', pts: l.slice().reverse(), art: true });
+      }
+      if (islands) warnings.push(`名牌鏤空：${islands} 個封閉內島（例如「口」「O」的中間）會掉出，已略過`);
+      if (tiny) warnings.push(`名牌鏤空：${tiny} 個細節小於銑刀直徑 ${minFeature}mm，已略過`);
+    } else {
+      engrave.push(...loops);
+      if (opts.mode === 'laser') raster = artRect;
+    }
+  }
+  return { outer, holes, engrave, raster, artRect, tabs, tabL, height, warnings };
+}
+
 // --- 牆面掛點 -------------------------------------------------------------
 
 /** 掛點 (x, y) 為世界座標的螺絲掛住位置（鑰匙孔窄槽頂端）。 */
@@ -410,7 +473,7 @@ const round1 = (v) => Math.round(v * 10) / 10;
 
 // --- 組裝 -----------------------------------------------------------------
 
-export function buildRack(input, mounts = []) {
+export function buildRack(input, mounts = [], options = {}) {
   const L = deriveLayout(input);
   const P = L.P;
   const warnings = [...L.warnings];
@@ -429,7 +492,14 @@ export function buildRack(input, mounts = []) {
   }));
   const shelf = finish(plateShape(L, true, []));
   const holePlate = finish(plateShape(L, false, holeCircles));
-  const top = finish(plateShape(L, true, []));
+  const np = options.nameplate?.enabled ? nameplateShape(L, options.nameplate) : null;
+  if (np) warnings.push(...np.warnings);
+  const nz = L.spliceMid - t / 2; // 名牌位於深度中間（前後卡扣之間）
+  const npSlots = np ? np.tabs.map((xc) => ({
+    type: 'poly', pts: rectCW(xc - np.tabL / 2 - L.tol / 2, nz - L.tol / 2, xc + np.tabL / 2 + L.tol / 2, nz + t + L.tol / 2),
+  })) : [];
+  const top = finish(plateShape(L, true, npSlots));
+  const nameplate = np ? { outer: dogbone(np.outer, r), holes: np.holes } : null;
   const backBase = backPanelBase(L);
   const clipRaw = clipShape(L);
   const clip = finish(clipRaw);
@@ -463,6 +533,14 @@ export function buildRack(input, mounts = []) {
         add(`${tag} 孔板${rI + 1}`, 'holeplate', holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
       }
       add(`${tag} 頂板`, 'top', top, [i, j], [x0, y0 + L.topY + t, 0], X, Z, [0, 1, 0.5]);
+      if (nameplate && j === L.my - 1) {
+        add(`${tag} 展示名牌`, 'nameplate', nameplate, [i, j], [x0, y0 + L.topY + t, nz], X, Y, [0, 1.6, 0.4]);
+        const p = parts[parts.length - 1];
+        p.engrave = np.engrave;
+        p.raster = np.raster;
+        p.artRect = np.artRect;
+        p.artMode = options.nameplate.mode;
+      }
     }
   }
 
@@ -527,6 +605,7 @@ export function buildRack(input, mounts = []) {
       moduleW: L.W, moduleH: L.H, mx: L.mx, my: L.my, cols: L.cols, rows: L.rows,
       capacity, required: L.K * L.N * P.racksX * P.racksY, holeD: L.holeD, rowPitch: L.rowPitch,
       racksX: P.racksX, racksY: P.racksY, hJoints, vJoints, hardware,
+      nameplateH: np ? np.height : 0,
     },
   };
 }

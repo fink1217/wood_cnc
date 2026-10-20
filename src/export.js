@@ -9,9 +9,15 @@ export function flatten(part, rotate = false) {
   const holes = part.holes.map((h) => (h.type === 'circle' ? { ...h, c: rot(h.c) } : { ...h, pts: h.pts.map(rot) }));
   const b = bbox(outer);
   const sh = ([x, y]) => [x - b.minX, y - b.minY];
+  const map = (p) => sh(rot(p));
+  // 雷射點陣：以影像左上、右上、左下三個角記錄（旋轉後仍可還原成仿射矩陣）
+  const r = part.raster;
+  const raster = r ? { tl: map([r.x, r.y + r.h]), tr: map([r.x + r.w, r.y + r.h]), bl: map([r.x, r.y]) } : null;
   return {
     outer: outer.map(sh),
     holes: holes.map((h) => (h.type === 'circle' ? { ...h, c: sh(h.c) } : { ...h, pts: h.pts.map(sh) })),
+    engrave: (part.engrave || []).map((l) => l.map(map)),
+    raster,
     w: b.w, h: b.h,
   };
 }
@@ -47,7 +53,8 @@ export function layoutParts(parts, P) {
 
 const f3 = (v) => (Math.round(v * 1000) / 1000).toString();
 
-export function toSVG(layout) {
+/** @param rasterHref 名牌雷射點陣圖（data URL），有雷射名牌時內嵌在 engrave 圖層 */
+export function toSVG(layout, rasterHref = null) {
   const { sheets, sheetW: W, sheetH: H } = layout;
   const sp = 100;
   const totalW = sheets.length * W + (sheets.length - 1) * sp;
@@ -57,7 +64,7 @@ export function toSVG(layout) {
   out.push(`<g id="sheet" fill="none" stroke="#999" stroke-width="0.5" stroke-dasharray="6 4">`);
   sheets.forEach((_, s) => out.push(`<rect x="${s * (W + sp)}" y="0" width="${W}" height="${H}"/>`));
   out.push(`</g>`);
-  const inner = [], outer = [], labels = [];
+  const inner = [], outer = [], labels = [], engrave = [], rasters = [];
   sheets.forEach((sheet, s) => {
     const ox = s * (W + sp);
     for (const it of sheet.items) {
@@ -65,6 +72,13 @@ export function toSVG(layout) {
       const tr = ([u, v]) => [ox + it.x + u, H - (it.y + v)];
       const path = (pts) => 'M' + pts.map((p) => tr(p).map(f3).join(' ')).join(' L') + ' Z';
       outer.push(`<path d="${path(it.flat.outer)}"/>`);
+      for (const l of it.flat.engrave || []) engrave.push(`<path d="${path(l)}"/>`);
+      if (it.flat.raster && rasterHref) {
+        // 單位影像 (0..1) → 板材座標的仿射矩陣
+        const p0 = tr(it.flat.raster.tl), p1 = tr(it.flat.raster.tr), p2 = tr(it.flat.raster.bl);
+        const m = [p1[0] - p0[0], p1[1] - p0[1], p2[0] - p0[0], p2[1] - p0[1], p0[0], p0[1]].map(f3).join(' ');
+        rasters.push(`<image href="${rasterHref}" x="0" y="0" width="1" height="1" preserveAspectRatio="none" transform="matrix(${m})"/>`);
+      }
       for (const h of it.flat.holes) {
         if (h.type === 'circle') {
           const [cx, cy] = tr(h.c);
@@ -75,6 +89,8 @@ export function toSVG(layout) {
       labels.push(`<text x="${f3(lx)}" y="${f3(ly)}">${escapeXml(it.part.name)}</text>`);
     }
   });
+  if (rasters.length) out.push(`<g id="engrave-raster">`, ...rasters, `</g>`);
+  if (engrave.length) out.push(`<g id="engrave" fill="none" stroke="#2f9e6b" stroke-width="0.2">`, ...engrave, `</g>`);
   out.push(`<g id="cut-inside" fill="none" stroke="#0070f3" stroke-width="0.3">`, ...inner, `</g>`);
   out.push(`<g id="cut-outside" fill="none" stroke="#e5484d" stroke-width="0.3">`, ...outer, `</g>`);
   out.push(`<g id="labels" fill="#888" font-size="6" font-family="sans-serif" text-anchor="middle">`, ...labels, `</g>`);
@@ -97,8 +113,8 @@ export function toDXF(layout) {
   g(9, '$INSUNITS'); g(70, 4);
   g(0, 'ENDSEC');
   g(0, 'SECTION'); g(2, 'TABLES');
-  g(0, 'TABLE'); g(2, 'LAYER'); g(70, 4);
-  for (const [name, color] of [['CUT_INSIDE', 5], ['CUT_OUTSIDE', 1], ['LABEL', 8], ['SHEET', 9]]) {
+  g(0, 'TABLE'); g(2, 'LAYER'); g(70, 5);
+  for (const [name, color] of [['ENGRAVE', 3], ['CUT_INSIDE', 5], ['CUT_OUTSIDE', 1], ['LABEL', 8], ['SHEET', 9]]) {
     g(0, 'LAYER'); g(2, name); g(70, 0); g(62, color); g(6, 'CONTINUOUS');
   }
   g(0, 'ENDTAB'); g(0, 'ENDSEC');
@@ -113,6 +129,7 @@ export function toDXF(layout) {
     poly('SHEET', [[ox, 0], [ox + W, 0], [ox + W, H], [ox, H]]);
     for (const it of sheet.items) {
       const tr = ([u, v]) => [ox + it.x + u, it.y + v];
+      for (const l of it.flat.engrave || []) poly('ENGRAVE', l.map(tr));
       for (const h of it.flat.holes) {
         if (h.type === 'circle') {
           const [cx, cy] = tr(h.c);
@@ -128,7 +145,7 @@ export function toDXF(layout) {
   return L.join('\n') + '\n';
 }
 
-const KIND_NAMES = { side: '側板', back: '背板', shelf: '層板', holeplate: '固定孔板', top: '頂板', clip: 'U 型卡扣', splice: '垂直連接板' };
+const KIND_NAMES = { side: '側板', back: '背板', shelf: '層板', holeplate: '固定孔板', top: '頂板', clip: 'U 型卡扣', splice: '垂直連接板', nameplate: '展示名牌' };
 
 export function toBOM(rack) {
   const groups = new Map();

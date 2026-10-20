@@ -92,7 +92,7 @@ body.sidebar-closed #sidebar-toggle .when-closed { display: inline; }
 .field small { display: block; color: var(--muted); font-size: 11px; }
 .field .input { display: flex; align-items: center; background: var(--field); border-radius: 8px; padding: 0 8px; }
 .field .input:hover, .field .input:focus-within { background: var(--field-hover); }
-.field input[type="number"] { width: 100%; border: none; background: transparent; color: inherit; font: inherit;
+.field input[type="number"], .field input[type="text"] { width: 100%; border: none; background: transparent; color: inherit; font: inherit;
   padding: 6px 0; outline: none; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
 .field input[type="number"]::-webkit-inner-spin-button { opacity: 0.4; }
 .field .unit { color: var(--muted); font-size: 11px; padding-left: 4px; }
@@ -106,6 +106,12 @@ button.primary { background: var(--accent); color: var(--accent-text); }
 button.ghost, .button.ghost { background: transparent; color: var(--muted); }
 button.ghost:hover, .button.ghost:hover { color: var(--text); background: var(--field); }
 .row-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+
+/* 名牌圖案預覽：固定白底，像一張紙，黑白圖案在深淺主題都看得清楚 */
+.np-preview { background: #fff; border-radius: 10px; padding: 8px; margin: 6px 0; }
+.np-preview canvas { width: 100%; height: auto; display: block; }
+.field:has(input[type="text"]) { grid-template-columns: 1fr 160px; }
+.field:has(input[type="range"]) { grid-template-columns: 1fr 140px; }
 
 details.group { margin: 2px 0; }
 details.group summary { cursor: pointer; list-style: none; padding: 6px 0; font-weight: 600; font-size: 12.5px; }
