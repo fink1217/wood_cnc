@@ -1,0 +1,101 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { dogbone, keyholeCW, rectCW, signedArea, bbox } from '../src/geometry.js';
+import { buildRack, deriveLayout, autoMounts, validateMount, DEFAULTS } from '../src/rack.js';
+import { layoutParts, toSVG, toDXF, toBOM } from '../src/export.js';
+
+test('dogbone 在矩形孔的四個角加入清角弧', () => {
+  const hole = rectCW(0, 0, 10, 20);
+  const out = dogbone(hole, 1.5);
+  assert.ok(out.length > 4 * 10);
+  // 清角弧必須通過原本的角點附近（圓心距角點 = r）
+  for (const [cx, cy] of [[0, 0], [0, 20], [10, 20], [10, 0]]) {
+    const near = Math.min(...out.map(([x, y]) => Math.hypot(x - cx, y - cy)));
+    assert.ok(near < 0.6, `corner ${cx},${cy} not cleared (${near})`);
+  }
+  assert.ok(signedArea(out) < 0, '孔維持順時針');
+});
+
+test('外輪廓凸角不加狗骨頭', () => {
+  const sq = [[0, 0], [10, 0], [10, 10], [0, 10]];
+  assert.equal(dogbone(sq, 1.5).length, 4);
+});
+
+test('鑰匙孔為順時針且尺寸正確', () => {
+  const k = keyholeCW(0, 0, 5, 2.5, 10);
+  assert.ok(signedArea(k) < 0);
+  const b = bbox(k);
+  assert.ok(Math.abs(b.minY + 5) < 0.1 && Math.abs(b.maxY - 12.5) < 0.1);
+  assert.ok(Math.abs(b.w - 10) < 0.1);
+});
+
+test('預設參數：模組格數與容量', () => {
+  const L = deriveLayout(DEFAULTS);
+  assert.equal(L.mx, 2);
+  assert.equal(L.my, 2);
+  const r = buildRack(DEFAULTS, autoMounts(L).map((m, i) => ({ ...m, id: i + 1 })));
+  assert.deepEqual(r.warnings, []);
+  assert.ok(r.info.capacity >= r.info.required);
+  assert.equal(r.counts.side, 8);
+  assert.equal(r.counts.clip, 8); // 1 條垂直接縫 × 2 列 × (上 2 + 下 2)
+  assert.equal(r.counts.key, 4); // 1 條水平接縫 × 2 欄 × 左右
+  assert.equal(r.cans.length, DEFAULTS.kinds * DEFAULTS.perKind);
+  assert.ok(r.mounts.every((m) => m.valid));
+  const keyholes = r.parts.flatMap((p) => p.holes).filter((h) => h.mount != null);
+  assert.equal(keyholes.length, r.mounts.length);
+});
+
+test('所有孔都在零件外框內', () => {
+  const r = buildRack(DEFAULTS, []);
+  for (const p of r.parts) {
+    for (const h of p.holes) {
+      const hb = h.type === 'circle'
+        ? { minX: h.c[0] - h.r, maxX: h.c[0] + h.r, minY: h.c[1] - h.r, maxY: h.c[1] + h.r }
+        : bbox(h.pts);
+      assert.ok(hb.minX > p.bounds.minX && hb.maxX < p.bounds.maxX && hb.minY > p.bounds.minY && hb.maxY < p.bounds.maxY, `${p.name} 孔超出外框`);
+    }
+  }
+});
+
+test('榫頭寬度 + 公差 = 榫槽寬度', () => {
+  const P = { ...DEFAULTS, dogbone: false, tolerance: 0.3 };
+  const r = buildRack(P, []);
+  const L = r.layout;
+  const side = r.parts.find((p) => p.kind === 'side');
+  const slot = bbox(side.holes[0].pts);
+  assert.ok(Math.abs(slot.w - (L.tabL + 0.3)) < 1e-6);
+  assert.ok(Math.abs(slot.h - (L.t + 0.3)) < 1e-6);
+});
+
+test('掛點落在側板或榫槽上時判定無效', () => {
+  const L = deriveLayout(DEFAULTS);
+  assert.equal(validateMount(L, 2, 200).valid, false);
+  assert.equal(validateMount(L, L.backTabs[0], L.shelfY[1] + 5).valid, false);
+  assert.equal(validateMount(L, -10, 10).valid, false);
+});
+
+test('單一模組（不延伸）沒有卡扣與卡榫', () => {
+  const r = buildRack({ ...DEFAULTS, kinds: 2, perKind: 3 }, []);
+  assert.equal(r.info.mx, 1);
+  assert.equal(r.info.my, 1);
+  assert.equal(r.counts.clip, undefined);
+  assert.equal(r.counts.key, undefined);
+});
+
+test('匯出 SVG / DXF / BOM', () => {
+  const r = buildRack(DEFAULTS, autoMounts(deriveLayout(DEFAULTS)).map((m, i) => ({ ...m, id: i + 1 })));
+  const lay = layoutParts(r.parts, r.params);
+  assert.equal(lay.sheets.reduce((n, s) => n + s.items.length, 0), r.parts.length);
+  for (const s of lay.sheets) {
+    for (const it of s.items) {
+      assert.ok(it.x >= 0 && it.y >= 0 && it.x + it.flat.w <= r.params.sheetW && it.y + it.flat.h <= r.params.sheetH);
+    }
+  }
+  const svg = toSVG(lay);
+  assert.match(svg, /^<\?xml/);
+  assert.equal((svg.match(/<path/g) || []).length > r.parts.length, true);
+  const dxf = toDXF(lay);
+  assert.match(dxf, /EOF\n$/);
+  assert.equal((dxf.match(/\nPOLYLINE\n/g) || []).length > r.parts.length, true);
+  assert.match(toBOM(r), /側板,8/);
+});

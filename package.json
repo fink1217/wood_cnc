@@ -1,0 +1,11 @@
+{
+  "name": "wood-cnc-paint-rack",
+  "version": "1.0.0",
+  "description": "參數化 CNC 木頭顏料罐架產生器（可水平/垂直延伸）",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "npx http-server -p 8080 -c-1 .",
+    "test": "node --test"
+  }
+}

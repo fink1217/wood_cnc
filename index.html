@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>顏料罐木架產生器</title>
+  <link rel="stylesheet" href="src/styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="viewport"></div>
+
+  <aside id="sidebar">
+    <header>
+      <h1>顏料罐木架</h1>
+      <button id="collapse" class="ghost" title="收合側欄">⟩</button>
+    </header>
+
+    <section id="summary"></section>
+
+    <section>
+      <h2>牆面掛點</h2>
+      <p class="hint">點選球體後拖拉座標軸移動；Delete 刪除。</p>
+      <div class="row-buttons">
+        <button id="mount-add">新增掛點</button>
+        <button id="mount-auto">自動配置</button>
+        <button id="mount-clear" class="ghost">全部清除</button>
+      </div>
+      <div id="mount-edit"></div>
+      <div id="mount-list"></div>
+      <div id="mount-pairs"></div>
+    </section>
+
+    <section>
+      <h2>檢視</h2>
+      <label class="check"><input type="checkbox" id="show-cans" checked /> 顯示顏料罐</label>
+      <label class="check"><input type="checkbox" id="show-dims" checked /> 顯示尺寸線</label>
+      <label class="field"><span>爆炸圖</span><input type="range" id="explode" min="0" max="1" step="0.01" value="0" /></label>
+      <div class="row-buttons">
+        <button id="view-front">正視</button>
+        <button id="view-iso">等角</button>
+        <button id="view-side">側視</button>
+      </div>
+    </section>
+
+    <section id="hover-info"></section>
+    <section id="warnings"></section>
+
+    <section id="params"></section>
+
+    <section>
+      <h2>匯出</h2>
+      <div class="row-buttons">
+        <button id="export-dxf">DXF</button>
+        <button id="export-svg">SVG</button>
+        <button id="export-bom">材料表 CSV</button>
+        <button id="export-json">參數 JSON</button>
+        <label class="button ghost">匯入 JSON<input type="file" id="import-json" accept="application/json" hidden /></label>
+      </div>
+      <p class="hint" id="layout-info"></p>
+      <button id="reset" class="ghost">恢復預設參數</button>
+    </section>
+  </aside>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
