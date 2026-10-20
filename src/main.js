@@ -2,10 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { buildRack, deriveLayout, autoMounts, validateMount, normalizeParams, DEFAULTS, PARAM_SPEC } from './rack.js';
+import { buildRack, deriveLayout, autoMounts, validateMount, normalizeParams, DEFAULTS, BASIC_SPEC, CHOICE_SPEC, ADVANCED_SPEC } from './rack.js';
 import { layoutParts, toSVG, toDXF, toBOM, makeZip, KIND_NAMES } from './export.js';
 
-const STORE_KEY = 'paintRack.v1';
+const STORE_KEY = 'paintRack.v2';
 const $ = (id) => document.getElementById(id);
 const fmt = (v) => (Math.round(v * 10) / 10).toFixed(1);
 
@@ -152,13 +152,14 @@ function rebuild() {
   sc.near = 1; sc.far = span * 6;
   sc.updateProjectionMatrix();
 
-  buildMountSpheres();
-  updateOverlay();
-  renderSidebar();
-
   layout = layoutParts(rack.parts, rack.params);
   $('layout-info').textContent = `排版：${layout.sheets.length} 張 ${rack.params.sheetW}×${rack.params.sheetH} 板材、共 ${rack.parts.length} 件` +
     (layout.warnings.length ? `（${layout.warnings.length} 件超過板材）` : '');
+
+  buildMountSpheres();
+  updateOverlay();
+  renderSidebar();
+  updateFieldNotes();
 
   if (firstBuild) { setView('iso'); firstBuild = false; }
 }
@@ -358,62 +359,103 @@ function mountPairs() {
 }
 
 // ---------- 側欄 ----------
+const fieldHTML = (spec, value, extra = '') => `
+  <label class="field" data-field="${spec.key}">
+    <span>${spec.label}<small class="note" id="note-${spec.key}">${spec.hint || ''}</small></span>
+    <span class="input"><input type="number" id="param-${spec.key}" data-key="${spec.key}" ${extra}
+      min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${value ?? ''}"/><span class="unit">${spec.unit || ''}</span></span>
+  </label>`;
+
 function renderParams() {
   const root = $('params');
-  root.innerHTML = '<h2>參數</h2>';
-  const groups = new Map();
-  for (const spec of PARAM_SPEC) {
-    if (!groups.has(spec.group)) groups.set(spec.group, []);
-    groups.get(spec.group).push(spec);
-  }
-  let first = true;
-  for (const [name, specs] of groups) {
-    const det = document.createElement('details');
-    det.className = 'group';
-    if (first || name === '顏料罐') det.open = true;
-    first = false;
-    det.innerHTML = `<summary>${name}</summary>`;
-    for (const spec of specs) {
-      if (spec.type === 'bool') {
-        const lab = document.createElement('label');
-        lab.className = 'check';
-        lab.innerHTML = `<input type="checkbox" data-key="${spec.key}" ${state.params[spec.key] ? 'checked' : ''}/> ${spec.label}`;
-        det.appendChild(lab);
-        continue;
-      }
-      const lab = document.createElement('label');
-      lab.className = 'field';
-      lab.innerHTML = `<span>${spec.label}${spec.hint ? `<small>${spec.hint}</small>` : ''}</span>
-        <span class="input"><input type="number" data-key="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${state.params[spec.key]}"/><span class="unit">${spec.unit || ''}</span></span>`;
-      det.appendChild(lab);
-    }
-    root.appendChild(det);
-  }
+  root.innerHTML = `<h2>參數</h2>
+    <div class="param-block">${BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('')}</div>
+    <h3>加工與五金</h3>
+    <div class="param-block">${CHOICE_SPEC.map((s) => `
+      <label class="field"><span>${s.label}</span>
+        <span class="input"><select id="param-${s.key}" data-key="${s.key}" data-choice="1">
+          ${s.options.map(([v, l]) => `<option value="${v}" ${state.params[s.key] === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select></span></label>`).join('')}</div>
+    <details class="group" id="advanced">
+      <summary>進階 <span class="hint">全部自動連動，輸入數值即可覆寫</span></summary>
+      <div class="param-block">${ADVANCED_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
+      <button id="adv-reset" class="ghost">進階全部改回自動</button>
+    </details>`;
+  try { $('advanced').open = localStorage.getItem(STORE_KEY + '.adv') === '1'; } catch { /* 忽略 */ }
+  $('advanced').addEventListener('toggle', () => {
+    try { localStorage.setItem(STORE_KEY + '.adv', $('advanced').open ? '1' : '0'); } catch { /* 忽略 */ }
+  });
+  $('adv-reset').onclick = () => {
+    for (const s of ADVANCED_SPEC) { state.params[s.key] = null; $('param-' + s.key).value = ''; }
+    onParamsChanged();
+  };
+}
+
+// 參數輸入事件只綁一次（renderParams 可能重複呼叫）
+{
+  const root = $('params');
   let timer = null;
+  const schedule = () => { clearTimeout(timer); timer = setTimeout(onParamsChanged, 180); };
   root.addEventListener('input', (e) => {
-    const key = e.target.dataset.key;
-    if (!key) return;
-    const spec = PARAM_SPEC.find((s) => s.key === key);
-    const raw = spec.type === 'bool' ? e.target.checked : e.target.value;
-    if (spec.type !== 'bool' && (raw === '' || !Number.isFinite(Number(raw)))) return;
-    state.params[key] = spec.type === 'bool' ? raw : Number(raw);
-    clearTimeout(timer);
-    timer = setTimeout(() => onParamsChanged(key), 180);
+    const el = e.target, key = el.dataset.key;
+    if (!key || el.dataset.choice) return;
+    if (el.dataset.adv) {
+      // 清空 = 回到自動
+      state.params[key] = el.value === '' ? null : Number(el.value);
+      if (el.value !== '' && !Number.isFinite(Number(el.value))) return;
+    } else {
+      if (el.value === '' || !Number.isFinite(Number(el.value))) return;
+      state.params[key] = Number(el.value);
+    }
+    schedule();
   });
   root.addEventListener('change', (e) => {
-    const key = e.target.dataset.key;
-    if (!key || e.target.type !== 'number') return;
-    e.target.value = normalizeParams(state.params)[key];
+    const el = e.target, key = el.dataset.key;
+    if (!key) return;
+    if (el.dataset.choice) { state.params[key] = el.value; onParamsChanged(); return; }
+    // 基本欄位：離開時顯示夾到範圍內的值
+    if (!el.dataset.adv) el.value = normalizeParams(state.params)[key];
+  });
+  root.addEventListener('click', (e) => {
+    const key = e.target.dataset?.auto;
+    if (!key) return;
+    e.preventDefault();
+    state.params[key] = null;
+    $('param-' + key).value = '';
+    onParamsChanged();
   });
 }
 
-function onParamsChanged(key) {
+/** 依連動結果更新進階欄位的提示與自動值 */
+function updateFieldNotes() {
+  const fields = rack.layout.fields;
+  for (const spec of ADVANCED_SPEC) {
+    const f = fields[spec.key];
+    const input = $('param-' + spec.key), note = $('note-' + spec.key);
+    if (!f || !input) continue;
+    input.placeholder = `${f.value}`;
+    input.classList.toggle('manual', !f.auto);
+    if (f.auto) {
+      if (document.activeElement !== input) input.value = '';
+      note.innerHTML = `<span class="auto-tag">自動</span> ${f.note}`;
+    } else {
+      note.innerHTML = `<button class="auto-btn" data-auto="${spec.key}">改回自動</button> ${f.note || '手動設定'}`;
+    }
+    note.classList.toggle('adjusted', f.adjusted);
+  }
+  const n = ADVANCED_SPEC.filter((s) => !fields[s.key].auto).length;
+  const adj = ADVANCED_SPEC.filter((s) => fields[s.key].adjusted).length;
+  $('advanced').querySelector('summary .hint').textContent = n
+    ? `${n} 項手動${adj ? `，${adj} 項因衝突已自動調整` : ''}`
+    : '全部自動連動，輸入數值即可覆寫';
+}
+
+function onParamsChanged() {
   state.params = normalizeParams(state.params);
-  const layoutKeys = ['thickness', 'canDia', 'canHeight', 'kinds', 'perKind', 'canGap', 'retainHeight', 'liftClear', 'frontMargin', 'maxCols', 'maxRows', 'margin', 'tolerance'];
   const before = rack.layout;
   const after = deriveLayout(state.params);
-  if (layoutKeys.includes(key) && (before.mx !== after.mx || before.my !== after.my || before.W !== after.W || before.H !== after.H)) {
-    // 尺寸改變時，掛點依比例搬移，維持在相對位置
+  if (before.mx !== after.mx || before.my !== after.my || before.W !== after.W || before.H !== after.H) {
+    // 尺寸改變時，掛點維持在同一模組內的相對位置（水平比例、距模組頂端距離）
     for (const m of state.mounts) {
       const i = Math.min(before.mx - 1, Math.floor(m.x / before.W)), j = Math.min(before.my - 1, Math.floor(m.y / before.H));
       const fu = (m.x - i * before.W) / before.W, fv = (before.H - (m.y - j * before.H));

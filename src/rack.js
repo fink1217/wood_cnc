@@ -8,6 +8,10 @@
 
 import { dogbone, rectCW, keyholeCW, bbox, rectsOverlap } from './geometry.js';
 
+// 參數分三層：
+//   基本（6 個數字）→ 加工與五金（4 個下拉選單）→ 進階（預設全部「自動」，依前兩層連動計算）。
+// 進階欄位值為 null 代表自動；使用者輸入值若與其他參數衝突，會被自動調整並附上原因。
+
 export const DEFAULTS = {
   thickness: 9,
   tolerance: 0.2,
@@ -15,74 +19,180 @@ export const DEFAULTS = {
   canHeight: 55,
   kinds: 6,
   perKind: 8,
-  canGap: 6,
-  holeClearance: 1.5,
-  retainHeight: 22,
-  liftClear: 5,
-  frontMargin: 10,
-  maxCols: 6,
-  maxRows: 3,
-  margin: 24,
-  lockHoles: true,
-  lockHoleDia: 6.5,
-  keyholeHead: 10,
-  keyholeShank: 5,
-  keyholeLen: 10,
-  dogbone: true,
-  bitDia: 3.175,
-  sheetW: 1220,
-  sheetH: 2440,
-  partGap: 10,
-  gridSnap: 5,
+  bit: '3.175',
+  sheet: '1220x2440',
+  screw: '4',
+  bolt: 'M6',
+  canGap: null,
+  holeClearance: null,
+  retainHeight: null,
+  liftClear: null,
+  frontMargin: null,
+  margin: null,
+  maxCols: null,
+  maxRows: null,
+  bitDia: null,
+  sheetW: null,
+  sheetH: null,
+  partGap: null,
+  gridSnap: null,
 };
 
-// UI 用的參數描述
-export const PARAM_SPEC = [
-  { group: '木料與公差', key: 'thickness', label: '木頭厚度', unit: 'mm', min: 3, max: 30, step: 0.5 },
-  { group: '木料與公差', key: 'tolerance', label: '組裝公差', unit: 'mm', min: 0, max: 1.5, step: 0.05, hint: '榫槽/卡槽單邊總加寬量' },
-  { group: '顏料罐', key: 'canDia', label: '顏料罐直徑', unit: 'mm', min: 10, max: 200, step: 0.5 },
-  { group: '顏料罐', key: 'canHeight', label: '顏料罐高度', unit: 'mm', min: 10, max: 300, step: 1 },
-  { group: '顏料罐', key: 'kinds', label: '預計放幾種', unit: '種', min: 1, max: 60, step: 1, hint: '每種一列' },
-  { group: '顏料罐', key: 'perKind', label: '每種放幾罐', unit: '罐', min: 1, max: 60, step: 1 },
-  { group: '顏料罐', key: 'canGap', label: '罐間距', unit: 'mm', min: 2, max: 40, step: 0.5 },
-  { group: '顏料罐', key: 'holeClearance', label: '罐孔餘隙', unit: 'mm', min: 0, max: 10, step: 0.1, hint: '孔徑 = 罐徑 + 餘隙' },
-  { group: '顏料罐', key: 'retainHeight', label: '固定孔板高度', unit: 'mm', min: 5, max: 200, step: 1, hint: '孔板頂面距層板頂面' },
-  { group: '顏料罐', key: 'liftClear', label: '取放餘隙', unit: 'mm', min: 0, max: 50, step: 1 },
-  { group: '顏料罐', key: 'frontMargin', label: '前緣留邊', unit: 'mm', min: 0, max: 80, step: 1 },
-  { group: '模組與延伸', key: 'maxCols', label: '每模組最多欄', unit: '罐', min: 1, max: 30, step: 1, hint: '超過即水平延伸' },
-  { group: '模組與延伸', key: 'maxRows', label: '每模組最多列', unit: '列', min: 1, max: 20, step: 1, hint: '超過即垂直延伸' },
-  { group: '模組與延伸', key: 'margin', label: '側板上下邊距', unit: 'mm', min: 14, max: 80, step: 1, hint: '卡扣/卡榫所在區域' },
-  { group: '模組與延伸', key: 'lockHoles', label: '螺栓鎖點孔', type: 'bool' },
-  { group: '模組與延伸', key: 'lockHoleDia', label: '鎖點孔徑', unit: 'mm', min: 2, max: 12, step: 0.1 },
-  { group: '牆面掛孔', key: 'keyholeHead', label: '掛孔大圓徑', unit: 'mm', min: 4, max: 20, step: 0.5 },
-  { group: '牆面掛孔', key: 'keyholeShank', label: '掛孔槽寬', unit: 'mm', min: 2, max: 12, step: 0.5 },
-  { group: '牆面掛孔', key: 'keyholeLen', label: '掛孔滑移長', unit: 'mm', min: 4, max: 30, step: 0.5 },
-  { group: '牆面掛孔', key: 'gridSnap', label: '拖拉吸附', unit: 'mm', min: 0, max: 50, step: 0.5 },
-  { group: 'CNC 與板材', key: 'dogbone', label: '狗骨頭清角', type: 'bool' },
-  { group: 'CNC 與板材', key: 'bitDia', label: '銑刀直徑', unit: 'mm', min: 0.5, max: 12.7, step: 0.005 },
-  { group: 'CNC 與板材', key: 'sheetW', label: '板材寬', unit: 'mm', min: 200, max: 3000, step: 10 },
-  { group: 'CNC 與板材', key: 'sheetH', label: '板材長', unit: 'mm', min: 200, max: 5000, step: 10 },
-  { group: 'CNC 與板材', key: 'partGap', label: '排版間距', unit: 'mm', min: 2, max: 50, step: 1 },
+export const BASIC_SPEC = [
+  { key: 'thickness', label: '木頭厚度', unit: 'mm', min: 3, max: 30, step: 0.5 },
+  { key: 'tolerance', label: '組裝公差', unit: 'mm', min: 0, max: 1.5, step: 0.05, hint: '緊 0.1 · 標準 0.2 · 鬆 0.35' },
+  { key: 'canDia', label: '顏料罐直徑', unit: 'mm', min: 10, max: 200, step: 0.5 },
+  { key: 'canHeight', label: '顏料罐高度', unit: 'mm', min: 10, max: 300, step: 1 },
+  { key: 'kinds', label: '預計放幾種', unit: '種', min: 1, max: 60, step: 1, int: true },
+  { key: 'perKind', label: '每種放幾罐', unit: '罐', min: 1, max: 60, step: 1, int: true },
 ];
 
-export function normalizeParams(input) {
+export const CHOICE_SPEC = [
+  { key: 'bit', label: '銑刀', options: [['0', '不清角'], ['3.175', '1/8″ (3.175)'], ['6', '6 mm'], ['6.35', '1/4″ (6.35)']] },
+  { key: 'sheet', label: '板材', options: [['1220x2440', '4×8 尺 (1220×2440)'], ['910x1820', '3×6 尺 (910×1820)'], ['600x900', '600×900'], ['600x600', '600×600']] },
+  { key: 'screw', label: '掛牆螺絲', options: [['3.5', '3.5 mm'], ['4', '4 mm'], ['5', '5 mm']] },
+  { key: 'bolt', label: '模組鎖點', options: [['none', '不開孔'], ['M4', 'M4 螺栓'], ['M5', 'M5 螺栓'], ['M6', 'M6 螺栓']] },
+];
+
+export const ADVANCED_SPEC = [
+  { key: 'canGap', label: '罐間距', unit: 'mm', min: 0, max: 40, step: 0.5 },
+  { key: 'holeClearance', label: '罐孔餘隙', unit: 'mm', min: 0, max: 10, step: 0.1 },
+  { key: 'retainHeight', label: '固定孔板高度', unit: 'mm', min: 0, max: 200, step: 1 },
+  { key: 'liftClear', label: '取放餘隙', unit: 'mm', min: 0, max: 50, step: 1 },
+  { key: 'frontMargin', label: '前緣留邊', unit: 'mm', min: 0, max: 100, step: 1 },
+  { key: 'margin', label: '側板上下邊距', unit: 'mm', min: 0, max: 80, step: 1 },
+  { key: 'maxCols', label: '每模組最多欄', unit: '罐', min: 1, max: 40, step: 1, int: true },
+  { key: 'maxRows', label: '每模組最多列', unit: '列', min: 1, max: 20, step: 1, int: true },
+  { key: 'bitDia', label: '銑刀直徑', unit: 'mm', min: 0, max: 12.7, step: 0.05 },
+  { key: 'sheetW', label: '板材寬', unit: 'mm', min: 200, max: 3000, step: 10 },
+  { key: 'sheetH', label: '板材長', unit: 'mm', min: 200, max: 5000, step: 10 },
+  { key: 'partGap', label: '排版間距', unit: 'mm', min: 0, max: 50, step: 1 },
+  { key: 'gridSnap', label: '掛點拖拉吸附', unit: 'mm', min: 0, max: 50, step: 0.5 },
+];
+
+const clampNum = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const r1 = (v) => Math.round(v * 10) / 10;
+const r2 = (v) => Math.round(v * 1000) / 1000;
+
+/** 清理輸入：基本欄位夾到合法範圍；進階欄位 null/空字串 = 自動 */
+export function normalizeParams(input = {}) {
   const P = { ...DEFAULTS };
-  for (const spec of PARAM_SPEC) {
-    const v = input?.[spec.key];
-    if (spec.type === 'bool') { if (typeof v === 'boolean') P[spec.key] = v; continue; }
-    const n = Number(v);
-    if (v !== undefined && v !== '' && Number.isFinite(n)) P[spec.key] = Math.min(spec.max, Math.max(spec.min, n));
+  for (const spec of BASIC_SPEC) {
+    const n = Number(input[spec.key]);
+    if (input[spec.key] !== undefined && input[spec.key] !== '' && input[spec.key] !== null && Number.isFinite(n)) {
+      P[spec.key] = clampNum(spec.int ? Math.round(n) : n, spec.min, spec.max);
+    }
   }
-  for (const k of ['kinds', 'perKind', 'maxCols', 'maxRows']) P[k] = Math.round(P[k]);
+  for (const spec of CHOICE_SPEC) {
+    const v = String(input[spec.key] ?? '');
+    if (spec.options.some(([o]) => o === v)) P[spec.key] = v;
+  }
+  for (const spec of ADVANCED_SPEC) {
+    const v = input[spec.key];
+    const n = Number(v);
+    P[spec.key] = v === null || v === undefined || v === '' || !Number.isFinite(n)
+      ? null
+      : clampNum(spec.int ? Math.round(n) : n, spec.min, spec.max);
+  }
   return P;
+}
+
+/**
+ * 解析並連動所有參數。
+ * 回傳 P（供幾何使用的完整數值）、fields（每個進階欄位的實際值、是否自動、說明）、warnings。
+ */
+export function resolveParams(input = {}) {
+  const raw = normalizeParams(input);
+  const fields = {};
+  const warnings = [];
+
+  // 依序決定每個進階值：自動值 → 下限 → 上限（下限優先）
+  const resolve = (key, autoVal, autoWhy, bounds = []) => {
+    const manual = raw[key];
+    const auto = manual == null;
+    let v = auto ? autoVal : manual;
+    let note = auto ? autoWhy : '';
+    for (const [kind, limit, why] of bounds) {
+      if (limit == null || !Number.isFinite(limit)) continue;
+      if (kind === 'max' && v > limit + 1e-9) { v = limit; if (!auto) note = `已調為 ${r2(v)}：${why}`; }
+    }
+    for (const [kind, limit, why] of bounds) {
+      if (limit == null || !Number.isFinite(limit)) continue;
+      if (kind === 'min' && v < limit - 1e-9) { v = limit; if (!auto) note = `已調為 ${r2(v)}：${why}`; }
+    }
+    v = r2(v);
+    fields[key] = { value: v, auto, note, adjusted: !auto && Math.abs(v - manual) > 1e-9 };
+    return v;
+  };
+
+  const t = raw.thickness, tol = raw.tolerance, D = raw.canDia, h = raw.canHeight;
+
+  const bitDia = resolve('bitDia', Number(raw.bit), '依銑刀選擇');
+  const slotW = t + tol;
+  if (bitDia > slotW) warnings.push(`銑刀 ⌀${bitDia} 比榫槽寬 ${r2(slotW)}mm 還粗，榫槽無法加工；請換細刀或加厚板材`);
+  else if (bitDia > 0 && bitDia / 2 * Math.SQRT2 * 2 > slotW) warnings.push(`銑刀 ⌀${bitDia} 對 ${r2(slotW)}mm 榫槽太粗，部分內角無法加狗骨頭`);
+
+  const [sw, sh] = raw.sheet.split('x').map(Number);
+  const sheetW = resolve('sheetW', Math.min(sw, sh), '依板材選擇');
+  const sheetH = resolve('sheetH', Math.max(sw, sh), '依板材選擇');
+  const partGap = resolve('partGap', Math.max(6, Math.ceil(bitDia * 2 + 2)), '銑刀直徑 × 2 + 2', [['min', bitDia + 1, '必須大於銑刀直徑']]);
+
+  const holeClearance = resolve('holeClearance', clampNum(Math.round(D * 0.03 * 2) / 2, 1, 3), '罐徑 × 3%');
+  const canGap = resolve('canGap', Math.max(6, Math.ceil(holeClearance + 4), Math.ceil(t * 0.6)), '依餘隙與板厚',
+    [['min', holeClearance + 2, '罐孔之間至少要留 2mm 木料']]);
+
+  const minRetain = r2(t + tol + 3);
+  const retainHeight = resolve('retainHeight', clampNum(Math.round(h * 0.35), minRetain, h * 0.6), '罐高 × 35%',
+    [['max', r1(h * 0.8), '不超過罐高 80%，否則難以取放'], ['min', minRetain, '孔板要高於層板：板厚 + 公差 + 3']]);
+  if (minRetain > h * 0.8) warnings.push(`罐子太矮（${h}mm），以 ${t}mm 板厚很難固定；建議改用較薄板材`);
+
+  const liftClear = resolve('liftClear', 5, '預設 5mm');
+
+  const margin = resolve('margin', Math.max(16, Math.round(t * 1.5 + 10)), '板厚 × 1.5 + 10',
+    [['min', Math.max(14, Math.ceil(t + 6)), '要容納延伸卡扣與卡榫']]);
+
+  // 深度需同時放得下罐孔與延伸接頭
+  const pitch = D + canGap;
+  const baseDepth = 2 * t + canGap / 2 + pitch;
+  const needDepth = Math.max(60, 2 * t + 26 + 2 * slotW + 6);
+  const minFront = Math.max(0, Math.ceil(needDepth - baseDepth));
+  const frontMargin = resolve('frontMargin', Math.max(10, minFront), minFront > 10 ? '加深以容納延伸卡榫' : '預設 10mm',
+    [['min', minFront, `深度至少 ${needDepth.toFixed(0)}mm 才放得下延伸卡榫`]]);
+
+  // 模組大小：自動時限制單一模組約 600mm 以內，並且一定要放得進板材
+  const rowPitch = t + h + retainHeight + liftClear;
+  const usableLong = sheetH - 2 * partGap, usableShort = sheetW - 2 * partGap;
+  const colsFor = (len) => Math.floor((len - 2 * t - canGap) / pitch);
+  const rowsFor = (len) => Math.floor((len - 2 * margin - t) / rowPitch);
+  const capCols = Math.max(1, colsFor(usableLong));
+  const capRows = Math.max(1, rowsFor(usableLong));
+  if (colsFor(usableLong) < 1 || rowsFor(usableLong) < 1) warnings.push('板材太小，連單一罐位的模組都放不下');
+  const maxCols = resolve('maxCols', Math.max(1, Math.min(raw.perKind, colsFor(Math.min(600, usableShort)))), '模組寬約 600mm 內',
+    [['max', capCols, '模組不能比板材寬']]);
+  const maxRows = resolve('maxRows', Math.max(1, Math.min(raw.kinds, rowsFor(Math.min(600, usableLong)))), '模組高約 600mm 內',
+    [['max', capRows, '模組不能比板材長']]);
+
+  const gridSnap = resolve('gridSnap', 5, '預設 5mm');
+
+  const screw = Number(raw.screw);
+  const keyholeHead = r1(screw * 2 + 1.5);
+  const bolt = raw.bolt === 'none' ? 0 : Number(raw.bolt.slice(1));
+
+  const P = {
+    thickness: t, tolerance: tol, canDia: D, canHeight: h, kinds: raw.kinds, perKind: raw.perKind,
+    canGap, holeClearance, retainHeight, liftClear, frontMargin, margin, maxCols, maxRows,
+    lockHoles: bolt > 0, lockHoleDia: bolt + 0.5,
+    keyholeHead, keyholeShank: r1(screw + 0.6), keyholeLen: keyholeHead,
+    dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap, gridSnap,
+  };
+  return { P, raw, fields, warnings };
 }
 
 const range = (n) => Array.from({ length: n }, (_, i) => i);
 
 /** 由參數推導出所有尺寸 */
 export function deriveLayout(input) {
-  const P = normalizeParams(input);
-  const warnings = [];
+  const { P, raw, fields, warnings } = resolveParams(input);
   const t = P.thickness, tol = P.tolerance;
   const K = P.kinds, N = P.perKind;
 
@@ -92,22 +202,12 @@ export function deriveLayout(input) {
   const gap = P.canGap;
   const pitch = P.canDia + gap;
   const holeD = P.canDia + P.holeClearance;
-  if (pitch - holeD < 2) warnings.push(`罐孔之間木料僅 ${(pitch - holeD).toFixed(1)}mm，請加大罐間距或減少餘隙`);
 
   const inset = t; // 背板離牆距離（側板後緣貼牆）
   const zs = inset + t; // 層板後緣
   const holeZ = zs + gap / 2 + pitch / 2;
-  let depth = holeZ + pitch / 2 + P.frontMargin;
-  const minDepth = 60;
-  if (depth < minDepth) depth = minDepth;
-
-  let retain = P.retainHeight;
-  const minRetain = t + tol + 3;
-  if (retain < minRetain) {
-    warnings.push(`固定孔板高度至少 ${minRetain.toFixed(1)}mm（板厚 + 公差 + 3），已自動調整`);
-    retain = minRetain;
-  }
-  if (retain > P.canHeight * 0.8) warnings.push('固定孔板高度超過罐高 80%，取放罐子會較困難');
+  const depth = holeZ + pitch / 2 + P.frontMargin;
+  const retain = P.retainHeight;
 
   const rowPitch = t + P.canHeight + retain + P.liftClear;
   const e = P.margin;
@@ -142,15 +242,13 @@ export function deriveLayout(input) {
   const keyZ = (clipZ[0] + clipZ[1]) / 2;
   const keyB = Math.min(30, clipZ[1] - clipZ[0] - notchW - 8);
   const keyA = keyB * 0.6;
-  if (keyB < 10) warnings.push('深度不足，垂直延伸卡榫過小；請加大前緣留邊');
   const clipLeg = Math.max(4, e - nd - 4);
-  if (e - nd - 4 < 4) warnings.push('側板上下邊距太小，卡扣可能碰到頂板/底層板');
   const clipLegW = Math.max(6, t);
 
   const lockZ = (zs + depth) / 2;
 
   return {
-    P, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD, inset, zs, holeZ, depth,
+    P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD, inset, zs, holeZ, depth,
     retain, rowPitch, e, innerW, W, H, plateDepth, tabL, sideTabs, backTabL, backTabs,
     shelfY, holePlateY, topY, backSideTabL, backSideTabY, backY0, backY1,
     nd, notchW, clipZ, keyZ, keyA, keyB, clipLeg, clipLegW, lockZ,
