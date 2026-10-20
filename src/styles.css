@@ -13,7 +13,7 @@
   --label-text: #fff;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #1b1a18;
     --panel: rgba(32, 31, 29, 0.8);
     --text: #ece9e4;
@@ -22,7 +22,19 @@
     --field-hover: rgba(255, 255, 255, 0.11);
     --label-bg: rgba(250, 249, 247, 0.9);
     --label-text: #1b1a18;
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+    --bg: #1b1a18;
+    --panel: rgba(32, 31, 29, 0.8);
+    --text: #ece9e4;
+    --muted: #8f8a82;
+    --field: rgba(255, 255, 255, 0.06);
+    --field-hover: rgba(255, 255, 255, 0.11);
+    --label-bg: rgba(250, 249, 247, 0.9);
+    --label-text: #1b1a18;
+    color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -34,7 +46,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 
 /* 無邊框側欄 */
 #sidebar {
-  position: fixed; top: 12px; right: 12px; bottom: 12px; width: 340px;
+  position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); right: calc(12px + env(safe-area-inset-right, 0px));
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px)); width: 340px;
   background: var(--panel); backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
   border: none; border-radius: 16px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.12);
   overflow-y: auto; overflow-x: hidden; padding: 4px 18px 18px; scrollbar-width: thin;
@@ -112,6 +125,10 @@ details.group[open] summary::before { transform: rotate(90deg); }
 .dim-label.mount-tag { background: var(--accent); color: #fff; }
 
 @media (max-width: 640px) {
-  #sidebar { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 52vh; }
+  #sidebar { top: auto; left: calc(8px + env(safe-area-inset-left, 0px)); right: calc(8px + env(safe-area-inset-right, 0px));
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px)); width: auto; height: 52vh; }
   #sidebar.collapsed { transform: translateY(calc(100% - 50px)); }
 }
+
+#export-msg { margin: 4px 0 8px; font-size: 12px; }
+#export-msg:empty { display: none; }

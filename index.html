@@ -58,6 +58,7 @@
     <section>
       <h2>匯出</h2>
       <div class="row-buttons">
+        <button id="export-zip" class="primary">全部打包 ZIP</button>
         <button id="export-dxf">DXF</button>
         <button id="export-svg">SVG</button>
         <button id="export-bom">材料表 CSV</button>
@@ -65,6 +66,7 @@
         <label class="button ghost">匯入 JSON<input type="file" id="import-json" accept="application/json" hidden /></label>
       </div>
       <p class="hint" id="layout-info"></p>
+      <p id="export-msg"></p>
       <button id="reset" class="ghost">恢復預設參數</button>
     </section>
   </aside>

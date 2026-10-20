@@ -99,3 +99,21 @@ test('匯出 SVG / DXF / BOM', () => {
   assert.equal((dxf.match(/\nPOLYLINE\n/g) || []).length > r.parts.length, true);
   assert.match(toBOM(r), /側板,8/);
 });
+
+test('ZIP 打包可被 unzip 讀取', async () => {
+  const { makeZip } = await import('../src/export.js');
+  const { execFileSync } = await import('node:child_process');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zip-'));
+  const file = path.join(dir, 'a.zip');
+  fs.writeFileSync(file, makeZip([{ name: '側板.dxf', data: '0\nEOF\n' }, { name: 'b.txt', data: 'hello' }]));
+  try {
+    const out = execFileSync('python3', ['-c', 'import zipfile,sys;z=zipfile.ZipFile(sys.argv[1]);print(z.testzip(), z.namelist())', file]).toString();
+    assert.match(out, /None/);
+    assert.match(out, /側板\.dxf/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

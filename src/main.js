@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { buildRack, deriveLayout, autoMounts, validateMount, normalizeParams, DEFAULTS, PARAM_SPEC } from './rack.js';
-import { layoutParts, toSVG, toDXF, toBOM, KIND_NAMES } from './export.js';
+import { layoutParts, toSVG, toDXF, toBOM, makeZip, KIND_NAMES } from './export.js';
 
 const STORE_KEY = 'paintRack.v1';
 const $ = (id) => document.getElementById(id);
@@ -595,8 +595,34 @@ $('reset').onclick = () => {
   rebuild();
 };
 
-function download(name, text, type) {
-  const blob = new Blob([text], { type });
+// 在 claude.ai 頁面中以 downloads 能力存檔（不支援 .dxf，改包成 zip）；本機則直接下載
+const SAVE_EXT = ['txt', 'json', 'md', 'csv', 'svg', 'html', 'zip', 'pdf'];
+let downloadsCap = null;
+const getDownloads = () => (downloadsCap ??= window.claude?.use ? window.claude.use('downloads').catch(() => null) : Promise.resolve(null));
+
+function showExportMsg(text, bad = false) {
+  const el = $('export-msg');
+  el.textContent = text;
+  el.className = bad ? 'warn' : 'okmsg';
+}
+
+async function download(name, data) {
+  const cap = await getDownloads();
+  if (cap) {
+    const ext = name.split('.').pop().toLowerCase();
+    if (!SAVE_EXT.includes(ext)) {
+      data = makeZip([{ name, data }]);
+      name += '.zip';
+    }
+    try {
+      await cap.save({ filename: name, data });
+      showExportMsg(`已存檔：${name}`);
+    } catch (err) {
+      if (err?.code !== 'declined') showExportMsg(`無法存檔（${err?.code || err}）`, true);
+    }
+    return;
+  }
+  const blob = new Blob([data]);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
@@ -604,10 +630,17 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 const stamp = () => `paint-rack_${rack.info.mx}x${rack.info.my}_t${rack.params.thickness}`;
-$('export-dxf').onclick = () => download(`${stamp()}.dxf`, toDXF(layout), 'application/dxf');
-$('export-svg').onclick = () => download(`${stamp()}.svg`, toSVG(layout), 'image/svg+xml');
-$('export-bom').onclick = () => download(`${stamp()}_BOM.csv`, toBOM(rack), 'text/csv');
-$('export-json').onclick = () => download(`${stamp()}.json`, JSON.stringify({ params: state.params, mounts: state.mounts }, null, 2), 'application/json');
+const paramsJson = () => JSON.stringify({ params: state.params, mounts: state.mounts }, null, 2);
+$('export-zip').onclick = () => download(`${stamp()}.zip`, makeZip([
+  { name: `${stamp()}.dxf`, data: toDXF(layout) },
+  { name: `${stamp()}.svg`, data: toSVG(layout) },
+  { name: `${stamp()}_BOM.csv`, data: toBOM(rack) },
+  { name: `${stamp()}.json`, data: paramsJson() },
+]));
+$('export-dxf').onclick = () => download(`${stamp()}.dxf`, toDXF(layout));
+$('export-svg').onclick = () => download(`${stamp()}.svg`, toSVG(layout));
+$('export-bom').onclick = () => download(`${stamp()}_BOM.csv`, toBOM(rack));
+$('export-json').onclick = () => download(`${stamp()}.json`, paramsJson());
 $('import-json').onchange = async (e) => {
   const file = e.target.files[0];
   if (!file) return;
@@ -622,7 +655,7 @@ $('import-json').onchange = async (e) => {
     firstBuild = true;
     rebuild();
   } catch (err) {
-    alert('無法讀取 JSON：' + err.message);
+    showExportMsg('無法讀取 JSON：' + err.message, true);
   }
   e.target.value = '';
 };
