@@ -119,6 +119,7 @@ export function maskToArtwork(mask, w, h) {
   return {
     aspect: h / w,
     loops: loops.map((l) => l.map(([x, y]) => [x / w, y / w])),
+    mask, // 「沿圖案外形」需要原始點陣
     px: { w, h },
   };
 }
@@ -143,14 +144,15 @@ export function readFileAsDataURL(file) {
   });
 }
 
-/** 把文字畫成圖（白底黑字） */
-export function textCanvas(text, font = '700 640px "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif') {
+/** 把文字畫成圖（白底黑字）；sizePx 越大，雷射點陣越清楚 */
+export function textCanvas(text, sizePx = 640) {
+  const font = `700 ${sizePx}px "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif`;
   const c = document.createElement('canvas');
   const ctx = c.getContext('2d');
   ctx.font = font;
   const lines = String(text || ' ').split('\n');
   const width = Math.max(...lines.map((l) => ctx.measureText(l).width), 10);
-  const lineH = 740;
+  const lineH = Math.round(sizePx * 1.16);
   c.width = Math.ceil(width + 40);
   c.height = lineH * lines.length + 20;
   ctx.fillStyle = '#fff';

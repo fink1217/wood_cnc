@@ -6,7 +6,8 @@
 //           垂直堆疊用垂直連接板（貼在上下側板內側，螺栓鎖緊）。
 // 所有模組都切出延伸槽，日後可隨時再往旁邊或上方擴充。
 
-import { dogbone, rectCW, keyholeCW, bbox, rectsOverlap } from './geometry.js';
+import { dogbone, rectCW, keyholeCW, bbox, rectsOverlap, signedArea } from './geometry.js';
+import { traceMask, simplifyLoop } from './artwork.js';
 
 // 參數分三層：
 //   基本（6 個數字）→ 加工與五金（4 個下拉選單）→ 進階（預設全部「自動」，依前兩層連動計算）。
@@ -98,6 +99,7 @@ export function normalizeParams(input = {}) {
     const v = String(input[spec.key] ?? '');
     if (spec.options.some(([o]) => o === v)) P[spec.key] = v;
   }
+  P.labelsOn = input.labelsOn === true; // 有任何顏料名牌開啟（影響前緣留邊）
   for (const spec of [...LINKED_BASIC_SPEC, ...ADVANCED_SPEC]) {
     const v = input[spec.key];
     const n = Number(v);
@@ -171,9 +173,15 @@ export function resolveParams(input = {}) {
   const baseDepth = 2 * t + canGap / 2 + pitch;
   // 連接板位於前後兩個卡扣之間，至少要放得下兩排螺栓孔
   const needDepth = Math.max(60, Math.ceil(2 * t + 10 + slotW + t + 4 * boltHole + 8));
-  const minFront = Math.max(0, Math.ceil(needDepth - baseDepth));
-  const frontMargin = resolve('frontMargin', Math.max(10, minFront), minFront > 10 ? '加深以容納垂直連接板' : '預設 10mm',
-    [['min', minFront, `深度至少 ${needDepth.toFixed(0)}mm 才放得下垂直連接板`]]);
+  const minFrontJoint = Math.max(0, Math.ceil(needDepth - baseDepth));
+  // 顏料名牌：孔板前緣要放得下名牌榫槽（罐孔前留 2mm、榫槽、前緣再留 5mm）
+  const holeD = D + holeClearance;
+  const minFrontLabel = raw.labelsOn ? Math.ceil(holeD / 2 - pitch / 2 + 2 + slotW + 5) : 0;
+  const minFront = Math.max(minFrontJoint, minFrontLabel);
+  const frontWhy = minFrontLabel > minFrontJoint ? '前緣要放得下顏料名牌的榫槽' : `深度至少 ${needDepth.toFixed(0)}mm 才放得下垂直連接板`;
+  const frontMargin = resolve('frontMargin', Math.max(10, minFront),
+    minFront <= 10 ? '預設 10mm' : minFrontLabel > minFrontJoint ? '加寬以放顏料名牌' : '加深以容納垂直連接板',
+    [['min', minFront, frontWhy]]);
 
   // 模組大小：自動時限制單一模組約 600mm 以內，並且一定要放得進板材
   const rowPitch = t + h + topGap;
@@ -268,12 +276,13 @@ export function deriveLayout(input) {
   const clipLegW = Math.max(6, t);
 
   const lockZ = (zs + depth) / 2;
+  const labelZ = holeZ + holeD / 2 + 2; // 顏料名牌榫槽後緣（罐孔前 2mm）
 
   return {
     P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD, inset, zs, holeZ, depth,
     retain, rowPitch, e, innerW, W, H, plateDepth, tabL, sideTabs, backTabL, backTabs,
     shelfY, holePlateY, topY, backSideTabL, backSideTabY, backY0, backY1,
-    mxUnit, myUnit, nd, notchW, clipZ, spliceZ, spliceMid, spliceHalfH, spliceBoltZ, spliceBoltY, clipLeg, clipLegW, lockZ,
+    mxUnit, myUnit, nd, notchW, clipZ, spliceZ, spliceMid, spliceHalfH, spliceBoltZ, spliceBoltY, clipLeg, clipLegW, lockZ, labelZ,
     totalW: mx * W, totalH: my * H,
   };
 }
@@ -380,34 +389,77 @@ export const NAMEPLATE_MODES = [
   ['cut', '鏤空（貫穿切割）'],
 ];
 
-/**
- * 名牌：立在頂板上、位於深度中間，兩支榫頭穿過頂板。
- * 2D (u = x, v = y，v = 0 為頂板頂面)。art 為 artwork.js 的正規化圖案（寬 1、高 aspect）。
- */
-function nameplateShape(L, opts) {
-  const { t, tol, W, innerW, e } = L;
-  const height = Math.min(300, Math.max(20, Number(opts.height) || 60));
-  const x0 = t + tol / 2, x1 = W - t - tol / 2, top = e + height;
-  const tabL = Math.min(30, innerW / 5);
-  const tabs = [0.25, 0.75].map((f) => t + innerW * f);
-  const outer = [[x0, 0]];
-  for (const xc of tabs) outer.push([xc - tabL / 2, 0], [xc - tabL / 2, -t], [xc + tabL / 2, -t], [xc + tabL / 2, 0]);
-  outer.push([x1, 0], [x1, top], [x0, top]);
+export const NAMEPLATE_SHAPES = [
+  ['rect', '矩形'],
+  ['round', '圓角'],
+  ['arch', '拱形'],
+  ['wave', '波浪'],
+  ['silhouette', '沿圖案外形'],
+];
 
-  const warnings = [];
-  const holes = [], engrave = [];
-  let raster = null, artRect = null;
-  const art = opts.art;
-  if (art && art.loops?.length) {
-    const m = Math.max(4, L.P.bitDia * 2);
-    const aw = x1 - x0 - 2 * m, ah = top - 2 * m;
+const arcPts = (cx, cy, rx, ry, a0, a1, n) => Array.from({ length: n + 1 }, (_, k) => {
+  const a = a0 + ((a1 - a0) * k) / n;
+  return [cx + rx * Math.cos(a), cy + ry * Math.sin(a)];
+});
+
+/**
+ * 名牌類零件的共用產生器（頂端名牌、每種顏料的名牌）。
+ * 2D (u = x, v = y)；v = 0 為插入面，榫頭往下 t。輪廓 = 底邊（含榫頭）+ 依造型產生的上緣。
+ * art 為 artwork.js 的正規化圖案（寬 1、高 aspect）。
+ */
+function signPlate({ x0, x1, top, t, tabs, tabL, shape = 'rect', art, mode, margin, minFeature, bandH = 0 }) {
+  const W = x1 - x0;
+  let ax0 = x0 + margin, ax1 = x1 - margin, ay0 = margin, ay1 = top - margin;
+  let upper; // 從右上 (x1, …) 沿上緣走到左上 (x0, …)
+  const fit = (box, alignBottom) => {
+    const aw = box[1] - box[0], ah = box[3] - box[2];
+    if (!art || aw <= 0 || ah <= 0) return null;
     const s = Math.min(aw, ah / art.aspect);
-    const ox = x0 + m + (aw - s) / 2, oy = m + (ah - s * art.aspect) / 2;
+    return { s, ox: box[0] + (aw - s) / 2, oy: alignBottom ? box[2] : box[2] + (ah - s * art.aspect) / 2 };
+  };
+  let place = null;
+  if (shape === 'round') {
+    const R = Math.min(top * 0.35, W * 0.2, 30);
+    upper = [...arcPts(x1 - R, top - R, R, R, 0, Math.PI / 2, 8), ...arcPts(x0 + R, top - R, R, R, Math.PI / 2, Math.PI, 8)];
+    ax0 = x0 + margin + R * 0.3; ax1 = x1 - margin - R * 0.3;
+  } else if (shape === 'arch') {
+    const A = Math.min(top * 0.45, W * 0.3);
+    upper = arcPts((x0 + x1) / 2, top - A, W / 2, A, 0, Math.PI, 32);
+    ax0 = x0 + W * 0.1 + margin; ax1 = x1 - W * 0.1 - margin; ay1 = top - A * 0.45 - margin;
+  } else if (shape === 'wave') {
+    const amp = Math.min(top * 0.15, 10), n = Math.max(2, Math.round(W / 120)), N = 12 * n;
+    upper = Array.from({ length: N + 1 }, (_, k) => {
+      const x = x1 - (W * k) / N;
+      return [x, top - amp / 2 + (amp / 2) * Math.cos((2 * Math.PI * n * (x - x0)) / W)];
+    });
+    ay1 = top - amp - margin;
+  } else {
+    upper = [[x1, top], [x0, top]];
+  }
+
+  if (shape === 'silhouette' && art?.mask) {
+    place = fit([ax0, ax1, Math.max(ay0, bandH), ay1], true);
+  } else place = fit([ax0, ax1, ay0, ay1], false);
+
+  let outer;
+  const bottom = [[x0, 0]];
+  for (const xc of tabs) bottom.push([xc - tabL / 2, 0], [xc - tabL / 2, -t], [xc + tabL / 2, -t], [xc + tabL / 2, 0]);
+  bottom.push([x1, 0]);
+  if (shape === 'silhouette' && art?.mask && place) {
+    const sil = silhouetteOutline({ x0, x1, top, art, place, dilate: margin, bandH: Math.max(bandH, t) });
+    // sil 由 (x1, 0) 逆時針繞到 (x0, 0)；底邊換成含榫頭的那一條
+    outer = [...bottom, ...sil];
+  } else {
+    outer = [...bottom, ...upper];
+  }
+
+  const holes = [], engrave = [];
+  let raster = null, artRect = null, islands = 0, tiny = 0;
+  if (art && art.loops?.length && place) {
+    const { s, ox, oy } = place;
     const loops = art.loops.map((l) => l.map(([px, py]) => [ox + px * s, oy + py * s]));
     artRect = { x: ox, y: oy, w: s, h: s * art.aspect };
-    if (opts.mode === 'cut') {
-      let islands = 0, tiny = 0;
-      const minFeature = Math.max(1, L.P.bitDia);
+    if (mode === 'cut') {
       for (const l of loops) {
         const b = bbox(l);
         let area = 0;
@@ -419,14 +471,100 @@ function nameplateShape(L, opts) {
         if (Math.min(b.w, b.h) < minFeature) { tiny++; continue; }
         holes.push({ type: 'poly', pts: l.slice().reverse(), art: true });
       }
-      if (islands) warnings.push(`名牌鏤空：${islands} 個封閉內島（例如「口」「O」的中間）會掉出，已略過`);
-      if (tiny) warnings.push(`名牌鏤空：${tiny} 個細節小於銑刀直徑 ${minFeature}mm，已略過`);
     } else {
       engrave.push(...loops);
-      if (opts.mode === 'laser') raster = artRect;
+      if (mode === 'laser') raster = artRect;
     }
   }
-  return { outer, holes, engrave, raster, artRect, tabs, tabL, height, warnings };
+  return { outer, holes, engrave, raster, artRect, islands, tiny };
+}
+
+/**
+ * 「沿圖案外形」：把圖案的天際線（每一欄從底往上填到最高的墨色）往外擴 dilate，
+ * 加上底部一條全寬的帶狀區，描出外框後平滑。回傳由 (x1, 0) 繞到 (x0, 0) 的點（不含底邊）。
+ */
+function silhouetteOutline({ x0, x1, top, art, place, dilate, bandH }) {
+  const cols = Math.max(4, Math.round(x1 - x0)), cw = (x1 - x0) / cols; // 約 1mm 一格，左右邊界剛好落在格線
+  const rows = Math.max(4, Math.ceil(top));
+  const ink = new Uint8Array(cols * rows); // 列由上而下
+  const { mask, px } = art;
+  const sky = new Int32Array(cols).fill(-1);
+  for (let c = 0; c < cols; c++) {
+    const u = x0 + (c + 0.5) * cw;
+    for (let r = rows - 1; r >= 0; r--) {
+      const v = r + 0.5; // r 為由下往上的列號
+      const nx = (u - place.ox) / place.s, ny = (v - place.oy) / place.s;
+      if (nx < 0 || nx >= 1 || ny < 0 || ny >= art.aspect) continue;
+      const X = Math.floor(nx * px.w), Yup = Math.floor(ny * px.w);
+      const Y = px.h - 1 - Yup;
+      if (X >= 0 && X < px.w && Y >= 0 && Y < px.h && mask[Y * px.w + X]) { sky[c] = r; break; }
+    }
+  }
+  const d = Math.max(1, Math.round(dilate));
+  const set = (c, r) => { if (c >= 0 && c < cols && r >= 0 && r < rows) ink[(rows - 1 - r) * cols + c] = 1; };
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < Math.min(rows, Math.ceil(bandH)); r++) set(c, r);
+    if (sky[c] < 0) continue;
+    // 天際線往外擴：以圓形筆刷沿著這一欄的頂點畫，往下全部填滿
+    for (let dc = -d; dc <= d; dc++) {
+      const reach = Math.floor(Math.sqrt(d * d - dc * dc));
+      const cc = c + dc;
+      if (cc < 0 || cc >= cols) continue;
+      for (let r = 0; r <= Math.min(rows - 1, sky[c] + reach); r++) set(cc, r);
+    }
+  }
+  const loops = traceMask(ink, cols, rows);
+  let best = null, bestArea = 0;
+  for (const l of loops) { const a = signedArea(l); if (a > bestArea) { bestArea = a; best = l; } }
+  let pts = best.map(([cx, cy]) => [x0 + cx * cw, cy]);
+  pts = simplifyLoop(pts, 0.6);
+  const fixed = (p) => Math.abs(p[1]) < 1e-6;
+  for (let it = 0; it < 2; it++) pts = chaikin(pts, fixed);
+  // 從右下角 (x1, 0) 開始，去掉底邊
+  const start = pts.findIndex((p) => fixed(p) && Math.abs(p[0] - x1) < 1e-6);
+  const rot = [...pts.slice(start), ...pts.slice(0, start)];
+  const end = rot.findIndex((p, k) => k > 0 && fixed(p));
+  return rot.slice(0, end + 1).filter((p, k, a) => !(fixed(p) && k > 0 && k < a.length - 1));
+}
+
+// Chaikin 平滑；fixed 的點保留原位（底邊與榫頭）
+function chaikin(pts, fixed) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    if (fixed(p)) out.push(p);
+    if (fixed(p) && fixed(q)) continue;
+    if (!fixed(p)) out.push([0.75 * p[0] + 0.25 * q[0], 0.75 * p[1] + 0.25 * q[1]]);
+    if (!fixed(q)) out.push([0.25 * p[0] + 0.75 * q[0], 0.25 * p[1] + 0.75 * q[1]]);
+  }
+  return out;
+}
+
+/** 頂端名牌：立在頂板上、位於深度中間，兩支榫頭穿過頂板 */
+function nameplateShape(L, opts) {
+  const { t, tol, W, innerW, e } = L;
+  const height = Math.min(300, Math.max(20, Number(opts.height) || 60));
+  const tabL = Math.min(30, innerW / 5);
+  const tabs = [0.25, 0.75].map((f) => t + innerW * f);
+  const s = signPlate({
+    x0: t + tol / 2, x1: W - t - tol / 2, top: e + height, t, tabs, tabL,
+    shape: opts.shape, art: opts.art?.loops?.length ? opts.art : null, mode: opts.mode,
+    margin: Math.max(4, L.P.bitDia * 2), minFeature: Math.max(1, L.P.bitDia), bandH: Math.min(e, 15),
+  });
+  return { ...s, tabs, tabL, height };
+}
+
+/** 每種顏料的名牌：立在固定孔板前緣、罐子前方，兩支榫頭插進孔板 */
+function labelShape(L, opts, art) {
+  const { t, tol, W, innerW } = L;
+  const height = Math.min(60, Math.max(8, Number(opts.height) || 18));
+  const tabL = Math.min(20, innerW / 6);
+  const tabs = [0.2, 0.8].map((f) => t + innerW * f);
+  const s = signPlate({
+    x0: t + tol / 2 + 1, x1: W - t - tol / 2 - 1, top: height, t, tabs, tabL,
+    shape: 'round', art, mode: opts.mode, margin: Math.max(1.5, L.P.bitDia * 0.75), minFeature: Math.max(1, L.P.bitDia),
+  });
+  return { ...s, tabs, tabL, height };
 }
 
 // --- 牆面掛點 -------------------------------------------------------------
@@ -493,7 +631,24 @@ export function buildRack(input, mounts = [], options = {}) {
   const shelf = finish(plateShape(L, true, []));
   const holePlate = finish(plateShape(L, false, holeCircles));
   const np = options.nameplate?.enabled ? nameplateShape(L, options.nameplate) : null;
-  if (np) warnings.push(...np.warnings);
+
+  // 每種顏料的名牌（各自開關）；有名牌的那一列換成開了榫槽的孔板
+  const lab = options.labels?.enabled ? options.labels : null;
+  const labelOn = (kind) => !!lab && kind < L.K && lab.items?.[kind]?.on !== false;
+  const labelShapes = new Map();
+  let labelTemplate = null;
+  if (lab) {
+    for (let k = 0; k < L.K; k++) if (labelOn(k)) labelShapes.set(k, labelShape(L, lab, lab.items?.[k]?.art?.loops?.length ? lab.items[k].art : null));
+    labelTemplate = labelShapes.values().next().value || null;
+  }
+  const labelSlots = labelTemplate ? labelTemplate.tabs.map((xc) => ({
+    type: 'poly', pts: rectCW(xc - labelTemplate.tabL / 2 - L.tol / 2, L.labelZ, xc + labelTemplate.tabL / 2 + L.tol / 2, L.labelZ + t + L.tol),
+  })) : [];
+  const holePlateLabeled = labelTemplate ? finish(plateShape(L, false, [...holeCircles, ...labelSlots])) : null;
+  const signs = [np, ...labelShapes.values()].filter(Boolean);
+  const islands = signs.reduce((n, s) => n + s.islands, 0), tiny = signs.reduce((n, s) => n + s.tiny, 0);
+  if (islands) warnings.push(`名牌鏤空：${islands} 個封閉內島（例如「口」「O」的中間）會掉出，已略過`);
+  if (tiny) warnings.push(`名牌鏤空：${tiny} 個細節小於銑刀直徑 ${Math.max(1, P.bitDia)}mm，已略過`);
   const nz = L.spliceMid - t / 2; // 名牌位於深度中間（前後卡扣之間）
   const npSlots = np ? np.tabs.map((xc) => ({
     type: 'poly', pts: rectCW(xc - np.tabL / 2 - L.tol / 2, nz - L.tol / 2, xc + np.tabL / 2 + L.tol / 2, nz + t + L.tol / 2),
@@ -529,8 +684,17 @@ export function buildRack(input, mounts = [], options = {}) {
       add(`${tag} 背板`, 'back', back, [i, j], [x0, y0, L.inset], X, Y, [0, 0, -1]);
 
       for (let rI = 0; rI < L.rows; rI++) {
+        const kind = (j % L.myUnit) * L.rows + rI;
+        const labeled = labelShapes.has(kind);
         add(`${tag} 層板${rI + 1}`, 'shelf', shelf, [i, j], [x0, y0 + L.shelfY[rI] + t, 0], X, Z, [0, -0.3, 1]);
-        add(`${tag} 孔板${rI + 1}`, 'holeplate', holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
+        add(`${tag} 孔板${rI + 1}`, 'holeplate', labeled ? holePlateLabeled : holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
+        if (labeled) {
+          const ls = labelShapes.get(kind);
+          add(`${tag} 第${kind + 1}種 名牌`, 'label', { outer: dogbone(ls.outer, r), holes: ls.holes }, [i, j],
+            [x0, y0 + L.holePlateY[rI] + t, L.labelZ + L.tol / 2], X, Y, [0, 0.6, 2]);
+          const p = parts[parts.length - 1];
+          Object.assign(p, { engrave: ls.engrave, raster: ls.raster, artRect: ls.artRect, artMode: lab.mode, artKey: `label:${kind}`, labelKind: kind });
+        }
       }
       add(`${tag} 頂板`, 'top', top, [i, j], [x0, y0 + L.topY + t, 0], X, Z, [0, 1, 0.5]);
       if (nameplate && j === L.my - 1) {
@@ -540,6 +704,7 @@ export function buildRack(input, mounts = [], options = {}) {
         p.raster = np.raster;
         p.artRect = np.artRect;
         p.artMode = options.nameplate.mode;
+        p.artKey = 'top';
       }
     }
   }
@@ -606,6 +771,7 @@ export function buildRack(input, mounts = [], options = {}) {
       capacity, required: L.K * L.N * P.racksX * P.racksY, holeD: L.holeD, rowPitch: L.rowPitch,
       racksX: P.racksX, racksY: P.racksY, hJoints, vJoints, hardware,
       nameplateH: np ? np.height : 0,
+      labelCount: parts.filter((p) => p.kind === 'label').length,
     },
   };
 }

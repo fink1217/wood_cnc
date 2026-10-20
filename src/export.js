@@ -53,9 +53,12 @@ export function layoutParts(parts, P) {
 
 const f3 = (v) => (Math.round(v * 1000) / 1000).toString();
 
-/** @param rasterHref 名牌雷射點陣圖（data URL），有雷射名牌時內嵌在 engrave 圖層 */
+/**
+ * @param rasterHref 名牌雷射點陣圖：data URL 字串（所有名牌共用），或 (part) => data URL | null
+ */
 export function toSVG(layout, rasterHref = null) {
   const { sheets, sheetW: W, sheetH: H } = layout;
+  const hrefFor = typeof rasterHref === 'function' ? rasterHref : () => rasterHref;
   const sp = 100;
   const totalW = sheets.length * W + (sheets.length - 1) * sp;
   const out = [];
@@ -73,11 +76,12 @@ export function toSVG(layout, rasterHref = null) {
       const path = (pts) => 'M' + pts.map((p) => tr(p).map(f3).join(' ')).join(' L') + ' Z';
       outer.push(`<path d="${path(it.flat.outer)}"/>`);
       for (const l of it.flat.engrave || []) engrave.push(`<path d="${path(l)}"/>`);
-      if (it.flat.raster && rasterHref) {
+      const href = it.flat.raster ? hrefFor(it.part) : null;
+      if (href) {
         // 單位影像 (0..1) → 板材座標的仿射矩陣
         const p0 = tr(it.flat.raster.tl), p1 = tr(it.flat.raster.tr), p2 = tr(it.flat.raster.bl);
         const m = [p1[0] - p0[0], p1[1] - p0[1], p2[0] - p0[0], p2[1] - p0[1], p0[0], p0[1]].map(f3).join(' ');
-        rasters.push(`<image href="${rasterHref}" x="0" y="0" width="1" height="1" preserveAspectRatio="none" transform="matrix(${m})"/>`);
+        rasters.push(`<image href="${href}" x="0" y="0" width="1" height="1" preserveAspectRatio="none" transform="matrix(${m})"/>`);
       }
       for (const h of it.flat.holes) {
         if (h.type === 'circle') {
@@ -145,7 +149,7 @@ export function toDXF(layout) {
   return L.join('\n') + '\n';
 }
 
-const KIND_NAMES = { side: '側板', back: '背板', shelf: '層板', holeplate: '固定孔板', top: '頂板', clip: 'U 型卡扣', splice: '垂直連接板', nameplate: '展示名牌' };
+const KIND_NAMES = { side: '側板', back: '背板', shelf: '層板', holeplate: '固定孔板', top: '頂板', clip: 'U 型卡扣', splice: '垂直連接板', nameplate: '展示名牌', label: '顏料名牌' };
 
 export function toBOM(rack) {
   const groups = new Map();
