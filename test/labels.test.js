@@ -85,3 +85,46 @@ test('沿圖案外形：上緣跟著圖案高低起伏', () => {
   const rect = buildRack(DEFAULTS, [], { nameplate: { enabled: true, mode: 'engrave', shape: 'rect', height: 70, art } });
   assert.ok(bbox(p.outer).w <= bbox(rect.parts.find((q) => q.kind === 'nameplate').outer).w + 1e-6);
 });
+
+import { signSpan, deriveLayout } from '../src/rack.js';
+
+test('signSpan：寬度與位移都限制在兩片側板之間', () => {
+  const L = deriveLayout(DEFAULTS);
+  const full = signSpan(L, {});
+  assert.equal(full.maxOffset, 0, '滿寬時不能移');
+  const s = signSpan(L, { width: 200, offset: 9999 });
+  assert.equal(s.width, 200);
+  assert.ok(s.offsetClamped);
+  assert.ok(Math.abs(s.x1 - (L.W - L.t - L.tol / 2)) < 1e-6, '推到右側板');
+  const left = signSpan(L, { width: 200, offset: -9999 });
+  assert.ok(Math.abs(left.x0 - (L.t + L.tol / 2)) < 1e-6, '推到左側板');
+  const tiny = signSpan(L, { width: 5 }, 0, 40);
+  assert.equal(tiny.width, 40, '最小寬度');
+  assert.ok(tiny.widthClamped);
+});
+
+test('頂端名牌左右移：頂板榫槽跟著名牌榫頭移動', () => {
+  const build = (offset) => buildRack(DEFAULTS, [], { nameplate: { enabled: true, mode: 'engrave', height: 60, width: 200, offset, art } });
+  const a = build(0), b = build(50);
+  const slotX = (r) => r.parts.find((p) => p.kind === 'top').holes.map((h) => bbox(h.pts).minX);
+  const d = slotX(b).map((x, i) => x - slotX(a)[i]);
+  for (const v of d) assert.ok(Math.abs(v - 50) < 1e-6);
+  const plateX = (r) => bbox(r.parts.find((p) => p.kind === 'nameplate').outer).minX;
+  assert.ok(Math.abs(plateX(b) - plateX(a) - 50) < 1e-6);
+  assert.equal(b.info.nameplateSpan.offset, 50);
+});
+
+test('顏料名牌各自左右移，孔板榫槽各自對應', () => {
+  const items = [{ on: true, art, offset: -40 }, { on: true, art, offset: 40 }];
+  const r = buildRack({ ...DEFAULTS, kinds: 2, labelsOn: true }, [], { labels: { enabled: true, mode: 'engrave', height: 18, width: 150, items } });
+  const [l0, l1] = [0, 1].map((k) => r.parts.find((p) => p.kind === 'label' && p.labelKind === k));
+  assert.ok(Math.abs(bbox(l1.outer).minX - bbox(l0.outer).minX - 80) < 1e-6);
+  // 每列孔板的榫槽中心 = 該列名牌的榫頭中心
+  for (const lab of [l0, l1]) {
+    const row = lab.name.match(/M(\d+)-(\d+)/)[0];
+    const plate = r.parts.find((p) => p.kind === 'holeplate' && p.name.startsWith(row) && Math.abs(p.origin[1] - lab.origin[1]) < 1e-6);
+    const slots = plate.holes.filter((h) => h.type === 'poly').map((h) => { const b = bbox(h.pts); return (b.minX + b.maxX) / 2; });
+    const tabs = [0.2, 0.8].map((f) => lab.span.x0 + lab.span.width * f);
+    slots.forEach((x, i) => assert.ok(Math.abs(x - tabs[i]) < 1e-6));
+  }
+});

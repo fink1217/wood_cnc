@@ -26,9 +26,10 @@ const state = {
   showCans: true,
   showDims: true,
   // 展示名牌：image 為使用者匯入的圖片（縮小後的 data URL），沒有圖片時用文字
-  nameplate: { enabled: false, mode: 'laser', shape: 'rect', height: 60, text: 'PAINT', threshold: 128, invert: false, image: null },
-  // 每種顏料各自的名牌：items[k] = { on, text }，可各自關閉
-  labels: { enabled: false, mode: 'laser', height: 18, items: [] },
+  nameplate: { enabled: false, mode: 'laser', shape: 'rect', height: 60, width: null, offset: 0, text: 'PAINT', threshold: 128, invert: false, image: null },
+  // 每種顏料各自的名牌：items[k] = { on, text, offset }，可各自關閉、各自左右移；width 空白 = 滿寬
+  labels: { enabled: false, mode: 'laser', height: 18, width: null, items: [] },
+  selectedSign: null, // 'top' 或顏料編號：正在左右移的名牌
 };
 
 // 名牌圖案處理結果（由 updateArtwork 產生）：'top' 為頂端名牌，'label:k' 為第 k 種顏料
@@ -86,11 +87,19 @@ tc.showZ = false;
 tc.setSize(0.8);
 tc.setSpace('world');
 scene.add(tc);
+// 名牌拖拉：座標軸掛在一個代理物件上，只開放 X（左右）方向
+const signProxy = new THREE.Object3D();
+scene.add(signProxy);
+let signDrag = null; // { key: 'top' | 顏料編號, startX, startOffset, maxOffset, offset }
+
 tc.addEventListener('dragging-changed', (e) => {
   orbit.enabled = !e.value;
-  if (!e.value) { saveState(); rebuild(); }
+  if (e.value) return;
+  if (signDrag) commitSignOffset();
+  saveState();
+  rebuild();
 });
-tc.addEventListener('objectChange', onMountDrag);
+tc.addEventListener('objectChange', () => (tc.object === signProxy ? onSignDrag() : onMountDrag()));
 
 const KIND_COLORS = {
   side: 0xd9b48a, back: 0xc49a6c, shelf: 0xe4c49c, holeplate: 0xebd2ae, top: 0xe4c49c, clip: 0x6f9bd1, splice: 0x5fb08a,
@@ -163,7 +172,9 @@ function rebuild() {
     nameplate: { ...state.nameplate, art: artwork.art },
     labels: {
       ...state.labels,
-      items: Array.from({ length: kindsCount() }, (_, k) => ({ on: labelOn(k), art: artCache.get(`label:${k}`)?.art || null })),
+      items: Array.from({ length: kindsCount() }, (_, k) => ({
+        on: labelOn(k), art: artCache.get(`label:${k}`)?.art || null, offset: state.labels.items[k]?.offset || 0,
+      })),
     },
   });
   const L = rack.layout;
@@ -216,6 +227,12 @@ function rebuild() {
   renderBOM();
   renderNameplateStatus();
   updateFieldNotes();
+
+  // 重建後保留名牌的選取狀態，可以接著拖
+  if (state.selectedSign != null) {
+    const p = state.explode === 0 && signParts(state.selectedSign)[0];
+    if (p) selectSign(p); else clearSignSelection();
+  }
 
   if (firstBuild) { setView('iso'); firstBuild = false; }
 }
@@ -287,7 +304,58 @@ function onMountDrag() {
   renderMounts();
 }
 
+// ---------- 名牌左右移 ----------
+const signKey = (part) => (part.kind === 'nameplate' ? 'top' : part.labelKind);
+const signParts = (key) => rack.parts.filter((p) => (key === 'top' ? p.kind === 'nameplate' : p.kind === 'label' && p.labelKind === key));
+const signOffset = (key) => (key === 'top' ? state.nameplate.offset : state.labels.items[key]?.offset) || 0;
+
+function selectSign(part) {
+  state.selected = null;
+  state.selectedSign = signKey(part);
+  tc.detach();
+  buildMountSpheres();
+  const U = part.U, V = part.V, b = part.bounds;
+  const u = (b.minX + b.maxX) / 2, v = (b.minY + b.maxY) / 2;
+  signProxy.position.set(...part.origin.map((o, k) => o + u * U[k] + v * V[k] + (k === 2 ? part.t + 2 : 0)));
+  signDrag = { key: state.selectedSign, startX: signProxy.position.x, startOffset: part.span.offset, maxOffset: part.span.maxOffset, offset: part.span.offset };
+  tc.showY = false;
+  tc.attach(signProxy);
+  updateOverlay();
+  renderMounts();
+  renderSignOffsets();
+}
+
+function onSignDrag() {
+  const d = signDrag;
+  if (!d) return;
+  const want = d.startOffset + (signProxy.position.x - d.startX);
+  d.offset = Math.round(Math.min(d.maxOffset, Math.max(-d.maxOffset, want)));
+  signProxy.position.x = d.startX + (d.offset - d.startOffset);
+  // 預覽：直接平移名牌，放開後才重建（榫槽跟著移）
+  for (const w of partsGroup.children) {
+    const p = w.userData.part;
+    if ((p.kind === 'nameplate' || p.kind === 'label') && signKey(p) === d.key) w.position.x = d.offset - d.startOffset;
+  }
+  renderSignOffsets(d);
+}
+
+function commitSignOffset() {
+  const { key, offset } = signDrag;
+  if (key === 'top') state.nameplate.offset = offset;
+  else (state.labels.items[key] ||= {}).offset = offset;
+  signDrag = null;
+  syncSignInputs();
+}
+
+function clearSignSelection() {
+  state.selectedSign = null;
+  signDrag = null;
+  if (tc.object === signProxy) tc.detach();
+  tc.showY = true;
+}
+
 function selectMount(id) {
+  clearSignSelection();
   state.selected = id;
   tc.detach();
   for (const s of mountsGroup.children) {
@@ -706,7 +774,12 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   if (tc.axis || tc.dragging) return;
   setPointer(e);
   const hit = raycaster.intersectObjects(mountsGroup.children, false)[0];
-  if (hit) selectMount(hit.object.userData.mountId);
+  if (hit) { selectMount(hit.object.userData.mountId); return; }
+  // 點名牌：出現左右移的座標軸
+  if (state.explode > 0) return;
+  const partHit = raycaster.intersectObjects(partsGroup.children, true).find((h) => h.object.isMesh);
+  const part = partHit?.object.userData.part;
+  if (part && (part.kind === 'nameplate' || part.kind === 'label')) selectSign(part);
 });
 
 renderer.domElement.addEventListener('dblclick', (e) => {
@@ -736,7 +809,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   if ((e.key === 'Delete' || e.key === 'Backspace') && state.selected != null) removeMount(state.selected);
-  if (e.key === 'Escape') { state.selected = null; tc.detach(); buildMountSpheres(); updateOverlay(); renderMounts(); }
+  if (e.key === 'Escape') { clearSignSelection(); state.selected = null; tc.detach(); buildMountSpheres(); updateOverlay(); renderMounts(); renderSignOffsets(); }
 });
 
 function setView(kind) {
@@ -762,7 +835,7 @@ $('explode').oninput = (e) => {
   applyExplode();
   mountsGroup.visible = overlayGroup.visible = state.explode === 0;
   labelRenderer.domElement.style.display = state.explode === 0 ? '' : 'none';
-  if (state.explode > 0) tc.detach(); else if (state.selected != null) selectMount(state.selected);
+  if (state.explode > 0) { clearSignSelection(); tc.detach(); } else if (state.selected != null) selectMount(state.selected);
 };
 function setSidebar(open) {
   $('sidebar').classList.toggle('collapsed', !open);
@@ -922,6 +995,14 @@ function renderNameplate() {
           ${NAMEPLATE_SHAPES.map(([v, l]) => `<option value="${v}" ${np.shape === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select></span></label>
         <label class="field"><span>名牌高度<small>高出木架頂端</small></span><span class="input"><input type="number" id="np-height" min="20" max="300" step="1" value="${np.height}"/><span class="unit">mm</span></span></label>
+        <label class="field"><span>名牌寬度<small>空白 = 滿寬</small></span><span class="input"><input type="number" id="np-width" min="60" step="1" placeholder="滿寬" value="${np.width ?? ''}"/><span class="unit">mm</span></span></label>
+        <label class="field"><span>左右位移<small id="np-offset-note">正值往右；也可在 3D 點名牌拖拉</small></span><span class="input"><input type="number" id="np-offset" step="1" value="${np.offset || 0}"/><span class="unit">mm</span></span></label>
+      </div>
+      <div class="offset-slider">
+        <input type="range" id="np-offset-range" min="0" max="0" step="1" value="${np.offset || 0}" aria-label="頂端名牌左右位移"/>
+        <button id="np-center" class="ghost">置中</button>
+      </div>
+      <div class="param-block">
         <label class="field"><span>名牌文字<small>沒有匯入圖片時使用</small></span><span class="input"><input type="text" id="np-text" value="${escapeAttr(np.text)}" maxlength="40"/></span></label>
         <label class="field"><span>黑白門檻<small>越大，越多灰色變成墨色</small></span><input type="range" id="np-threshold" min="10" max="245" step="1" value="${np.threshold}"/></label>
       </div>
@@ -942,11 +1023,14 @@ function renderNameplate() {
           ${NAMEPLATE_MODES.map(([v, l]) => `<option value="${v}" ${state.labels.mode === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select></span></label>
         <label class="field"><span>名牌高度<small>高出固定孔板</small></span><span class="input"><input type="number" id="lb-height" min="8" max="60" step="1" value="${state.labels.height}"/><span class="unit">mm</span></span></label>
+        <label class="field"><span>名牌寬度<small>空白 = 滿寬；變窄後每片可各自左右移</small></span><span class="input"><input type="number" id="lb-width" min="30" step="1" placeholder="滿寬" value="${state.labels.width ?? ''}"/><span class="unit">mm</span></span></label>
       </div>
       <div class="row-buttons">
         <button id="lb-all-on" class="ghost">全部開啟</button>
         <button id="lb-all-off" class="ghost">全部關閉</button>
+        <button id="lb-center" class="ghost">全部置中</button>
       </div>
+      <p class="hint label-head"><span>開關 · 顏色 · 名稱</span><span>左右位移 mm</span></p>
       <div id="lb-list" class="label-list"></div>
       <p class="hint" id="lb-status"></p>
     </div>`;
@@ -960,6 +1044,21 @@ function renderNameplate() {
   $('lb-all-on').onclick = () => setAll(true);
   $('lb-all-off').onclick = () => setAll(false);
   $('np-shape').onchange = (e) => { np.shape = e.target.value; saveState(); rebuild(); };
+
+  // 寬度與左右位移（不需重新描圖，只重建幾何）
+  const geomLater = () => { clearTimeout(lbTimer); lbTimer = setTimeout(() => { saveState(); rebuild(); }, 150); };
+  const numOrNull = (v) => (v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  $('np-width').oninput = (e) => { np.width = numOrNull(e.target.value); geomLater(); };
+  const setTopOffset = (v) => { np.offset = Number(v) || 0; $('np-offset').value = np.offset; $('np-offset-range').value = np.offset; geomLater(); };
+  $('np-offset').oninput = (e) => { if (e.target.value !== '') setTopOffset(e.target.value); };
+  $('np-offset-range').oninput = (e) => setTopOffset(e.target.value);
+  $('np-center').onclick = () => setTopOffset(0);
+  $('lb-width').oninput = (e) => { lb.width = numOrNull(e.target.value); geomLater(); };
+  $('lb-center').onclick = () => {
+    for (const it of lb.items) if (it) it.offset = 0;
+    syncSignInputs();
+    geomLater();
+  };
   const changed = (rerender = true) => {
     saveState();
     updateArtwork().then(() => { if (rerender) rebuild(); });
@@ -1013,9 +1112,18 @@ function renderLabelList() {
       <input type="checkbox" data-lb-on="${k}" ${labelOn(k) ? 'checked' : ''} aria-label="第 ${k + 1} 種名牌開關"/>
       <span class="swatch" style="background:hsl(${hue} 55% 55%)"></span>
       <span class="input"><input type="text" data-lb-text="${k}" maxlength="24" placeholder="顏料 ${k + 1}" value="${escapeAttr(state.labels.items[k]?.text || '')}"/></span>
+      <span class="input offset"><input type="number" data-lb-off="${k}" step="1" value="${state.labels.items[k]?.offset || 0}" aria-label="第 ${k + 1} 種名牌左右位移"/></span>
     </label>`;
   }).join('');
   list.oninput = (e) => {
+    const off = Number(e.target.dataset.lbOff);
+    if (!Number.isNaN(off)) {
+      if (e.target.value === '') return;
+      (state.labels.items[off] ||= {}).offset = Number(e.target.value) || 0;
+      clearTimeout(lbTimer);
+      lbTimer = setTimeout(() => { saveState(); rebuild(); }, 150);
+      return;
+    }
     const k = Number(e.target.dataset.lbText);
     if (Number.isNaN(k)) return;
     (state.labels.items[k] ||= {}).text = e.target.value;
@@ -1029,6 +1137,40 @@ function renderLabelList() {
     saveState();
     updateArtwork().then(rebuild);
   };
+}
+
+/** 依重建結果更新位移欄位的範圍；超出範圍的值會被拉回並顯示實際值 */
+function renderSignOffsets(live = null) {
+  if (!rack) return;
+  const ns = rack.info.nameplateSpan;
+  const range = $('np-offset-range'), note = $('np-offset-note');
+  if (range && ns) {
+    const off = live?.key === 'top' ? live.offset : ns.offset;
+    range.min = -ns.maxOffset; range.max = ns.maxOffset; range.disabled = ns.maxOffset <= 0;
+    if (document.activeElement !== range) range.value = off;
+    if (document.activeElement !== $('np-offset')) $('np-offset').value = off;
+    if (!live) state.nameplate.offset = ns.offset;
+    note.textContent = ns.maxOffset > 0
+      ? `可移 ±${fmt(ns.maxOffset)} mm（名牌寬 ${fmt(ns.width)}）${state.selectedSign === 'top' ? ' · 3D 座標軸已出現，可直接拖拉' : '；也可在 3D 點名牌拖拉'}`
+      : `目前滿寬 ${fmt(ns.width)} mm，先把名牌寬度改窄才能左右移`;
+    note.classList.toggle('adjusted', !!ns.widthClamped);
+  }
+  for (const [k, sp] of Object.entries(rack.info.labelSpans || {})) {
+    const input = document.querySelector(`[data-lb-off="${k}"]`);
+    if (!input) continue;
+    const off = live?.key === Number(k) ? live.offset : sp.offset;
+    input.min = -sp.maxOffset; input.max = sp.maxOffset;
+    input.disabled = sp.maxOffset <= 0;
+    input.title = sp.maxOffset > 0 ? `可移 ±${fmt(sp.maxOffset)} mm` : '滿寬，先把名牌寬度改窄';
+    if (document.activeElement !== input) input.value = off;
+    if (!live && state.labels.items[k]) state.labels.items[k].offset = sp.offset;
+    input.closest('.label-row')?.classList.toggle('selected', state.selectedSign === Number(k));
+  }
+}
+
+function syncSignInputs() {
+  if ($('np-offset')) { $('np-offset').value = state.nameplate.offset || 0; $('np-offset-range').value = state.nameplate.offset || 0; }
+  for (const input of document.querySelectorAll('[data-lb-off]')) input.value = state.labels.items[input.dataset.lbOff]?.offset || 0;
 }
 
 function renderLabelStatus() {
@@ -1047,6 +1189,7 @@ function renderLabelStatus() {
 
 function renderNameplateStatus() {
   renderLabelStatus();
+  renderSignOffsets();
   const cv = $('np-canvas'), status = $('np-status');
   if (!cv) return;
   const ctx = cv.getContext('2d');
@@ -1104,7 +1247,7 @@ function loadState() {
       state.showDims = d.showDims ?? true;
       if (d.nameplate && typeof d.nameplate === 'object') state.nameplate = { ...state.nameplate, ...d.nameplate };
       if (d.labels && typeof d.labels === 'object') {
-        state.labels = { ...state.labels, ...d.labels, items: Array.isArray(d.labels.items) ? d.labels.items.map((it) => ({ on: it?.on !== false, text: String(it?.text ?? '') })) : [] };
+        state.labels = { ...state.labels, ...d.labels, items: Array.isArray(d.labels.items) ? d.labels.items.map((it) => ({ on: it?.on !== false, text: String(it?.text ?? ''), offset: Number(it?.offset) || 0 })) : [] };
       }
       return;
     }
@@ -1135,3 +1278,11 @@ renderer.setAnimationLoop(() => {
 
 window.__rack = () => rack; // 除錯用
 window.__artUrl = () => artwork.dataUrl;
+// 除錯／瀏覽器測試用：名牌座標軸位置、世界座標 → 螢幕座標
+window.__signProxy = () => signProxy.position.toArray();
+window.__project = (w) => {
+  const v = Array.isArray(w) ? new THREE.Vector3(...w) : new THREE.Vector3(w.x, w.y, w.z);
+  v.project(camera);
+  const r = renderer.domElement.getBoundingClientRect();
+  return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+};

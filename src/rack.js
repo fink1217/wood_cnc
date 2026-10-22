@@ -540,31 +540,55 @@ function chaikin(pts, fixed) {
   return out;
 }
 
-/** 頂端名牌：立在頂板上、位於深度中間，兩支榫頭穿過頂板 */
+/**
+ * 名牌的寬度與左右位移：一律限制在兩片側板之間。
+ * width 空白 = 滿寬；offset 為相對模組中心的位移（正 = 往右）。回傳實際採用的值與可移動範圍。
+ */
+export function signSpan(L, { width, offset } = {}, inset = 0, minWidth = 40) {
+  const aMin = L.t + L.tol / 2 + inset, aMax = L.W - L.t - L.tol / 2 - inset;
+  const full = aMax - aMin;
+  const wantW = Number(width);
+  const w = width == null || width === '' || !(wantW > 0) ? full : Math.min(full, Math.max(Math.min(minWidth, full), wantW));
+  const maxOffset = (full - w) / 2;
+  const wantOff = Number(offset) || 0;
+  const off = Math.min(maxOffset, Math.max(-maxOffset, wantOff));
+  const c = (aMin + aMax) / 2 + off;
+  return {
+    x0: c - w / 2, x1: c + w / 2, width: r2(w), offset: r2(off), maxOffset: r2(maxOffset), full: r2(full),
+    widthClamped: width != null && width !== '' && Math.abs(w - wantW) > 1e-6,
+    offsetClamped: Math.abs(off - wantOff) > 1e-6,
+  };
+}
+
+/** 頂端名牌：立在頂板上、位於深度中間，兩支榫頭穿過頂板（榫槽跟著名牌位置走） */
 function nameplateShape(L, opts) {
-  const { t, tol, W, innerW, e } = L;
+  const { t, e } = L;
   const height = Math.min(300, Math.max(20, Number(opts.height) || 60));
-  const tabL = Math.min(30, innerW / 5);
-  const tabs = [0.25, 0.75].map((f) => t + innerW * f);
+  const span = signSpan(L, opts, 0, 60);
+  const w = span.x1 - span.x0;
+  const tabL = Math.min(30, w / 5);
+  const tabs = [0.25, 0.75].map((f) => span.x0 + w * f);
   const s = signPlate({
-    x0: t + tol / 2, x1: W - t - tol / 2, top: e + height, t, tabs, tabL,
+    x0: span.x0, x1: span.x1, top: e + height, t, tabs, tabL,
     shape: opts.shape, art: opts.art?.loops?.length ? opts.art : null, mode: opts.mode,
     margin: Math.max(4, L.P.bitDia * 2), minFeature: Math.max(1, L.P.bitDia), bandH: Math.min(e, 15),
   });
-  return { ...s, tabs, tabL, height };
+  return { ...s, tabs, tabL, height, span };
 }
 
-/** 每種顏料的名牌：立在固定孔板前緣、罐子前方，兩支榫頭插進孔板 */
-function labelShape(L, opts, art) {
-  const { t, tol, W, innerW } = L;
+/** 每種顏料的名牌：立在固定孔板前緣、罐子前方，兩支榫頭插進孔板（每片可各自左右移） */
+function labelShape(L, opts, art, offset) {
+  const { t } = L;
   const height = Math.min(60, Math.max(8, Number(opts.height) || 18));
-  const tabL = Math.min(20, innerW / 6);
-  const tabs = [0.2, 0.8].map((f) => t + innerW * f);
+  const span = signSpan(L, { width: opts.width, offset }, 1, 30);
+  const w = span.x1 - span.x0;
+  const tabL = Math.min(20, w / 6);
+  const tabs = [0.2, 0.8].map((f) => span.x0 + w * f);
   const s = signPlate({
-    x0: t + tol / 2 + 1, x1: W - t - tol / 2 - 1, top: height, t, tabs, tabL,
+    x0: span.x0, x1: span.x1, top: height, t, tabs, tabL,
     shape: 'round', art, mode: opts.mode, margin: Math.max(1.5, L.P.bitDia * 0.75), minFeature: Math.max(1, L.P.bitDia),
   });
-  return { ...s, tabs, tabL, height };
+  return { ...s, tabs, tabL, height, span };
 }
 
 // --- 牆面掛點 -------------------------------------------------------------
@@ -636,15 +660,25 @@ export function buildRack(input, mounts = [], options = {}) {
   const lab = options.labels?.enabled ? options.labels : null;
   const labelOn = (kind) => !!lab && kind < L.K && lab.items?.[kind]?.on !== false;
   const labelShapes = new Map();
-  let labelTemplate = null;
   if (lab) {
-    for (let k = 0; k < L.K; k++) if (labelOn(k)) labelShapes.set(k, labelShape(L, lab, lab.items?.[k]?.art?.loops?.length ? lab.items[k].art : null));
-    labelTemplate = labelShapes.values().next().value || null;
+    for (let k = 0; k < L.K; k++) {
+      if (!labelOn(k)) continue;
+      const item = lab.items?.[k];
+      labelShapes.set(k, labelShape(L, lab, item?.art?.loops?.length ? item.art : null, item?.offset));
+    }
   }
-  const labelSlots = labelTemplate ? labelTemplate.tabs.map((xc) => ({
-    type: 'poly', pts: rectCW(xc - labelTemplate.tabL / 2 - L.tol / 2, L.labelZ, xc + labelTemplate.tabL / 2 + L.tol / 2, L.labelZ + t + L.tol),
-  })) : [];
-  const holePlateLabeled = labelTemplate ? finish(plateShape(L, false, [...holeCircles, ...labelSlots])) : null;
+  // 孔板榫槽跟著每片名牌的位置；位置相同的共用同一款孔板
+  const labeledPlates = new Map();
+  const holePlateFor = (ls) => {
+    const key = ls.tabs.map((x) => x.toFixed(3)).join(',') + `|${ls.tabL.toFixed(3)}`;
+    if (!labeledPlates.has(key)) {
+      const slots = ls.tabs.map((xc) => ({
+        type: 'poly', pts: rectCW(xc - ls.tabL / 2 - L.tol / 2, L.labelZ, xc + ls.tabL / 2 + L.tol / 2, L.labelZ + t + L.tol),
+      }));
+      labeledPlates.set(key, finish(plateShape(L, false, [...holeCircles, ...slots])));
+    }
+    return labeledPlates.get(key);
+  };
   const signs = [np, ...labelShapes.values()].filter(Boolean);
   const islands = signs.reduce((n, s) => n + s.islands, 0), tiny = signs.reduce((n, s) => n + s.tiny, 0);
   if (islands) warnings.push(`名牌鏤空：${islands} 個封閉內島（例如「口」「O」的中間）會掉出，已略過`);
@@ -687,13 +721,13 @@ export function buildRack(input, mounts = [], options = {}) {
         const kind = (j % L.myUnit) * L.rows + rI;
         const labeled = labelShapes.has(kind);
         add(`${tag} 層板${rI + 1}`, 'shelf', shelf, [i, j], [x0, y0 + L.shelfY[rI] + t, 0], X, Z, [0, -0.3, 1]);
-        add(`${tag} 孔板${rI + 1}`, 'holeplate', labeled ? holePlateLabeled : holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
+        add(`${tag} 孔板${rI + 1}`, 'holeplate', labeled ? holePlateFor(labelShapes.get(kind)) : holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
         if (labeled) {
           const ls = labelShapes.get(kind);
           add(`${tag} 第${kind + 1}種 名牌`, 'label', { outer: dogbone(ls.outer, r), holes: ls.holes }, [i, j],
             [x0, y0 + L.holePlateY[rI] + t, L.labelZ + L.tol / 2], X, Y, [0, 0.6, 2]);
           const p = parts[parts.length - 1];
-          Object.assign(p, { engrave: ls.engrave, raster: ls.raster, artRect: ls.artRect, artMode: lab.mode, artKey: `label:${kind}`, labelKind: kind });
+          Object.assign(p, { engrave: ls.engrave, raster: ls.raster, artRect: ls.artRect, artMode: lab.mode, artKey: `label:${kind}`, labelKind: kind, span: ls.span });
         }
       }
       add(`${tag} 頂板`, 'top', top, [i, j], [x0, y0 + L.topY + t, 0], X, Z, [0, 1, 0.5]);
@@ -705,6 +739,7 @@ export function buildRack(input, mounts = [], options = {}) {
         p.artRect = np.artRect;
         p.artMode = options.nameplate.mode;
         p.artKey = 'top';
+        p.span = np.span;
       }
     }
   }
@@ -772,6 +807,8 @@ export function buildRack(input, mounts = [], options = {}) {
       racksX: P.racksX, racksY: P.racksY, hJoints, vJoints, hardware,
       nameplateH: np ? np.height : 0,
       labelCount: parts.filter((p) => p.kind === 'label').length,
+      nameplateSpan: np ? np.span : null,
+      labelSpans: Object.fromEntries([...labelShapes].map(([k, s]) => [k, s.span])),
     },
   };
 }
