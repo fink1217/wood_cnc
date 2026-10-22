@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import {
   buildRack, deriveLayout, autoMounts, validateMount, normalizeParams,
@@ -82,24 +81,10 @@ const mountsGroup = new THREE.Group();
 const overlayGroup = new THREE.Group();
 scene.add(partsGroup, cansGroup, mountsGroup, overlayGroup);
 
-const tc = new TransformControls(camera, renderer.domElement);
-tc.showZ = false;
-tc.setSize(0.8);
-tc.setSpace('world');
-scene.add(tc);
-// 名牌拖拉：座標軸掛在一個代理物件上，只開放 X（左右）方向
-const signProxy = new THREE.Object3D();
-scene.add(signProxy);
-let signDrag = null; // { key: 'top' | 顏料編號, startX, startOffset, maxOffset, offset }
-
-tc.addEventListener('dragging-changed', (e) => {
-  orbit.enabled = !e.value;
-  if (e.value) return;
-  if (signDrag) commitSignOffset();
-  saveState();
-  rebuild();
-});
-tc.addEventListener('objectChange', () => (tc.object === signProxy ? onSignDrag() : onMountDrag()));
+// 控制球：掛點與名牌的移動、縮放都直接拖球（不用座標軸）
+const handlesGroup = new THREE.Group();
+scene.add(handlesGroup);
+let drag = null; // 拖拉中的控制球：{ type, plane, start, ... }
 
 const KIND_COLORS = {
   side: 0xd9b48a, back: 0xc49a6c, shelf: 0xe4c49c, holeplate: 0xebd2ae, top: 0xe4c49c, clip: 0x6f9bd1, splice: 0x5fb08a,
@@ -167,7 +152,8 @@ function disposeGroup(group) {
 
 let firstBuild = true;
 
-function rebuild() {
+/** @param light 拖拉中：只更新 3D，略過排版、材料表與側欄（放開時再完整重建） */
+function rebuild(light = false) {
   rack = buildRack(rackInput(), state.mounts, {
     nameplate: { ...state.nameplate, art: artwork.art },
     labels: {
@@ -179,7 +165,7 @@ function rebuild() {
   });
   const L = rack.layout;
 
-  if (tc.object) tc.detach();
+  hovered = null;
   disposeGroup(partsGroup);
   for (const part of rack.parts) partsGroup.add(partMesh(part));
   applyExplode();
@@ -216,6 +202,12 @@ function rebuild() {
   sc.near = 1; sc.far = span * 6;
   sc.updateProjectionMatrix();
 
+  if (light) {
+    buildMountSpheres();
+    buildSignHandles();
+    return;
+  }
+
   layout = layoutParts(rack.parts, rack.params);
   $('layout-info').textContent = `排版：${layout.sheets.length} 張 ${rack.params.sheetW}×${rack.params.sheetH} 板材、共 ${rack.parts.length} 件` +
     (layout.warnings.length ? `（${layout.warnings.length} 件超過板材）` : '');
@@ -228,11 +220,10 @@ function rebuild() {
   renderNameplateStatus();
   updateFieldNotes();
 
-  // 重建後保留名牌的選取狀態，可以接著拖
-  if (state.selectedSign != null) {
-    const p = state.explode === 0 && signParts(state.selectedSign)[0];
-    if (p) selectSign(p); else clearSignSelection();
-  }
+  // 重建後保留名牌的選取與控制球
+  if (state.selectedSign && !selectedSignPart()) state.selectedSign = null;
+  buildSignHandles();
+  updateHint();
 
   if (firstBuild) { setView('iso'); firstBuild = false; }
 }
@@ -257,9 +248,9 @@ function applyExplode() {
 // ---------- 掛點 ----------
 const sphereGeo = new THREE.SphereGeometry(1, 24, 16);
 const sphereMats = {
-  ok: new THREE.MeshBasicMaterial({ color: 0xd9822b, depthTest: false }),
-  bad: new THREE.MeshBasicMaterial({ color: 0xd6453d, depthTest: false }),
-  sel: new THREE.MeshBasicMaterial({ color: 0xffc061, depthTest: false }),
+  ok: new THREE.MeshBasicMaterial({ color: 0xd9822b, depthTest: false, transparent: true }),
+  bad: new THREE.MeshBasicMaterial({ color: 0xd6453d, depthTest: false, transparent: true }),
+  sel: new THREE.MeshBasicMaterial({ color: 0xffc061, depthTest: false, transparent: true }),
 };
 
 function mountZ() { return rack.layout.inset + rack.layout.t + 0.5; }
@@ -279,7 +270,6 @@ function buildMountSpheres() {
     tag.position.set(0, 1.9, 0);
     s.add(tag);
     mountsGroup.add(s);
-    if (m.id === state.selected) tc.attach(s);
   }
 }
 
@@ -288,84 +278,204 @@ function snapValue(v) {
   return g > 0 ? Math.round(v / g) * g : Math.round(v * 10) / 10;
 }
 
-function onMountDrag() {
-  const s = tc.object;
-  if (!s) return;
-  const L = rack.layout;
-  const m = state.mounts.find((q) => q.id === s.userData.mountId);
-  if (!m) return;
-  // 只對正在拖拉的軸做吸附，另一軸維持原值
-  const axis = tc.axis || 'XY';
-  if (axis.includes('X')) m.x = Math.min(L.totalW, Math.max(0, snapValue(s.position.x)));
-  if (axis.includes('Y')) m.y = Math.min(L.totalH, Math.max(0, snapValue(s.position.y)));
-  s.position.set(m.x, m.y, mountZ());
-  s.material = validateMount(L, m.x, m.y).valid ? sphereMats.sel : sphereMats.bad;
-  updateOverlay();
-  renderMounts();
-}
-
-// ---------- 名牌左右移 ----------
+// ---------- 名牌：選取與控制球 ----------
 const signKey = (part) => (part.kind === 'nameplate' ? 'top' : part.labelKind);
-const signParts = (key) => rack.parts.filter((p) => (key === 'top' ? p.kind === 'nameplate' : p.kind === 'label' && p.labelKind === key));
-const signOffset = (key) => (key === 'top' ? state.nameplate.offset : state.labels.items[key]?.offset) || 0;
+const isSign = (part) => part && (part.kind === 'nameplate' || part.kind === 'label');
+const signParts = (key) => rack.parts.filter((p) => isSign(p) && signKey(p) === key);
+const handleMats = {
+  // transparent：與名牌雕刻貼圖同一批繪製，renderOrder 才能讓控制球畫在最上層
+  move: new THREE.MeshBasicMaterial({ color: 0xd9822b, depthTest: false, transparent: true }),
+  size: new THREE.MeshBasicMaterial({ color: 0x3a6fd8, depthTest: false, transparent: true }),
+};
+const outlineMat = new THREE.LineDashedMaterial({ color: 0x3a6fd8, dashSize: 5, gapSize: 3, depthTest: false, transparent: true });
+
+function selectedSignPart() {
+  if (!state.selectedSign || !rack) return null;
+  const list = signParts(state.selectedSign.key);
+  return list.find((p) => p.module.join(',') === state.selectedSign.module) || list[0] || null;
+}
 
 function selectSign(part) {
   state.selected = null;
-  state.selectedSign = signKey(part);
-  tc.detach();
+  state.selectedSign = { key: signKey(part), module: part.module.join(',') };
   buildMountSpheres();
-  const U = part.U, V = part.V, b = part.bounds;
-  const u = (b.minX + b.maxX) / 2, v = (b.minY + b.maxY) / 2;
-  signProxy.position.set(...part.origin.map((o, k) => o + u * U[k] + v * V[k] + (k === 2 ? part.t + 2 : 0)));
-  signDrag = { key: state.selectedSign, startX: signProxy.position.x, startOffset: part.span.offset, maxOffset: part.span.maxOffset, offset: part.span.offset };
-  tc.showY = false;
-  tc.attach(signProxy);
+  buildSignHandles();
   updateOverlay();
   renderMounts();
-  renderSignOffsets();
+  updateHint();
+  markLabelRow();
 }
 
-function onSignDrag() {
-  const d = signDrag;
-  if (!d) return;
-  const want = d.startOffset + (signProxy.position.x - d.startX);
-  d.offset = Math.round(Math.min(d.maxOffset, Math.max(-d.maxOffset, want)));
-  signProxy.position.x = d.startX + (d.offset - d.startOffset);
-  // 預覽：直接平移名牌，放開後才重建（榫槽跟著移）
-  for (const w of partsGroup.children) {
-    const p = w.userData.part;
-    if ((p.kind === 'nameplate' || p.kind === 'label') && signKey(p) === d.key) w.position.x = d.offset - d.startOffset;
+function markLabelRow() {
+  for (const row of document.querySelectorAll('.label-row')) {
+    const k = Number(row.querySelector('[data-lb-pick]').dataset.lbPick);
+    row.classList.toggle('selected', state.selectedSign?.key === k);
   }
-  renderSignOffsets(d);
 }
 
-function commitSignOffset() {
-  const { key, offset } = signDrag;
-  if (key === 'top') state.nameplate.offset = offset;
-  else (state.labels.items[key] ||= {}).offset = offset;
-  signDrag = null;
-  syncSignInputs();
-}
-
-function clearSignSelection() {
+function clearSelection() {
+  state.selected = null;
   state.selectedSign = null;
-  signDrag = null;
-  if (tc.object === signProxy) tc.detach();
-  tc.showY = true;
+  disposeGroup(handlesGroup);
+  buildMountSpheres();
+  updateOverlay();
+  renderMounts();
+  updateHint();
+  markLabelRow();
+}
+
+const handleRadius = () => Math.max(4, Math.max(rack.layout.totalW, rack.layout.totalH) * 0.009);
+
+/** 選取的名牌：橘球＝左右移、左右藍球＝拉寬窄、上方藍球＝拉高，外加虛線外框與尺寸 */
+function buildSignHandles() {
+  disposeGroup(handlesGroup);
+  const part = selectedSignPart();
+  if (!part || state.explode > 0) return;
+  const s = part.span, [ox, oy, oz] = part.origin, b = part.bounds;
+  const z = oz + part.t + 1, yMid = oy + b.maxY / 2, cx = ox + (s.x0 + s.x1) / 2;
+  const r = handleRadius();
+  const ball = (type, pos, mat, scale = 1) => {
+    const m = new THREE.Mesh(sphereGeo, mat);
+    m.scale.setScalar(r * scale);
+    m.position.set(...pos);
+    m.renderOrder = 12;
+    m.userData.handle = type;
+    handlesGroup.add(m);
+  };
+  ball('move', [cx, yMid, z], handleMats.move, 1.7);
+  ball('left', [ox + s.x0, yMid, z], handleMats.size);
+  ball('right', [ox + s.x1, yMid, z], handleMats.size);
+  ball('top', [cx, oy + b.maxY, z], handleMats.size);
+  const pts = [[s.x0, 0], [s.x1, 0], [s.x1, b.maxY], [s.x0, b.maxY], [s.x0, 0]].map(([u, v]) => new THREE.Vector3(ox + u, oy + v, z));
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), outlineMat);
+  line.computeLineDistances();
+  line.renderOrder = 11;
+  handlesGroup.add(line);
+  const h = part.kind === 'nameplate' ? rack.info.nameplateH : Math.round(b.maxY);
+  const tag = label(`${fmt(s.width)} × ${fmt(h)} mm${s.maxOffset > 0 || s.offset ? ` · 位移 ${s.offset > 0 ? '+' : ''}${fmt(s.offset)}` : ''}`, 'sign-tag');
+  tag.position.set(cx, oy + b.maxY + r * 3, z);
+  handlesGroup.add(tag);
+}
+
+// ---------- 拖拉 ----------
+let rebuildTimer = null;
+function rebuildSoon() {
+  if (rebuildTimer) return;
+  rebuildTimer = setTimeout(() => { rebuildTimer = null; rebuild(true); }, 50);
+}
+
+function planeAt(z) { return new THREE.Plane(new THREE.Vector3(0, 0, 1), -z); }
+function pointOn(plane) { const p = new THREE.Vector3(); return raycaster.ray.intersectPlane(plane, p) ? p : null; }
+
+function startDrag(type, obj, point) {
+  const z = obj.position.z;
+  drag = { type, plane: planeAt(z), start: point.clone(), moved: false };
+  if (type === 'mount') drag.mount = state.mounts.find((m) => m.id === obj.userData.mountId);
+  else {
+    const part = selectedSignPart();
+    drag.part = part;
+    drag.span0 = { ...part.span };
+    drag.mid0 = (part.span.x0 + part.span.x1) / 2 - part.span.offset; // 可移動範圍的中心
+  }
+  orbit.enabled = false;
+}
+
+function moveDrag() {
+  const p = pointOn(drag.plane);
+  if (!p) return;
+  drag.moved = true;
+  const L = rack.layout;
+  if (drag.type === 'mount') {
+    const m = drag.mount;
+    m.x = Math.min(L.totalW, Math.max(0, snapValue(p.x)));
+    m.y = Math.min(L.totalH, Math.max(0, snapValue(p.y)));
+    const s = mountsGroup.children.find((q) => q.userData.mountId === m.id);
+    if (s) {
+      s.position.set(m.x, m.y, mountZ());
+      s.material = validateMount(L, m.x, m.y).valid ? sphereMats.sel : sphereMats.bad;
+    }
+    updateOverlay();
+    renderMounts();
+    return;
+  }
+  const { part, span0, mid0 } = drag;
+  const key = signKey(part);
+  const minW = part.kind === 'nameplate' ? 60 : 30;
+  const u = p.x - part.origin[0], v = p.y - part.origin[1];
+  const aMin = mid0 - span0.full / 2, aMax = mid0 + span0.full / 2;
+  const setSpan = (x0, x1) => {
+    const w = Math.round(x1 - x0);
+    const full = w >= span0.full - 0.5;
+    const width = full ? null : w;
+    const offset = full ? 0 : Math.round((x0 + x1) / 2 - mid0);
+    if (key === 'top') { state.nameplate.width = width; state.nameplate.offset = offset; }
+    else { state.labels.width = width; (state.labels.items[key] ||= {}).offset = offset; }
+  };
+  if (drag.type === 'move') {
+    const max = (span0.full - span0.width) / 2;
+    const off = Math.round(Math.min(max, Math.max(-max, span0.offset + (p.x - drag.start.x))));
+    if (key === 'top') state.nameplate.offset = off; else (state.labels.items[key] ||= {}).offset = off;
+    // 預覽：平移名牌與控制球，放開後才重建（榫槽跟著移）
+    const dx = off - span0.offset;
+    for (const w of partsGroup.children) if (isSign(w.userData.part) && signKey(w.userData.part) === key) w.position.x = dx;
+    handlesGroup.position.x = dx;
+    return;
+  }
+  if (drag.type === 'right') setSpan(span0.x0, Math.min(aMax, Math.max(span0.x0 + minW, u)));
+  if (drag.type === 'left') setSpan(Math.max(aMin, Math.min(span0.x1 - minW, u)), span0.x1);
+  if (drag.type === 'top') {
+    if (key === 'top') state.nameplate.height = Math.round(Math.min(300, Math.max(20, v - rack.layout.e)));
+    else state.labels.height = Math.round(Math.min(60, Math.max(8, v)));
+  }
+  rebuildSoon();
+}
+
+function endDrag() {
+  const d = drag;
+  drag = null;
+  orbit.enabled = true;
+  handlesGroup.position.x = 0;
+  clearTimeout(rebuildTimer);
+  rebuildTimer = null;
+  if (d.moved) { saveState(); rebuild(); }
+}
+
+/** 名牌還原：滿寬、置中 */
+function resetSign(key) {
+  if (key === 'top') { state.nameplate.width = null; state.nameplate.offset = 0; }
+  else { state.labels.width = null; (state.labels.items[key] ||= {}).offset = 0; }
+  saveState();
+  rebuild();
 }
 
 function selectMount(id) {
-  clearSignSelection();
+  state.selectedSign = null;
+  disposeGroup(handlesGroup);
   state.selected = id;
-  tc.detach();
   for (const s of mountsGroup.children) {
     const m = state.mounts.find((q) => q.id === s.userData.mountId);
     const valid = validateMount(rack.layout, m.x, m.y).valid;
     s.material = s.userData.mountId === id ? sphereMats.sel : valid ? sphereMats.ok : sphereMats.bad;
-    if (s.userData.mountId === id) tc.attach(s);
   }
   updateOverlay();
   renderMounts();
+  updateHint();
+}
+
+// ---------- 操作提示 ----------
+function updateHint() {
+  const el = $('hint');
+  if (!el) return;
+  let html;
+  if (state.selectedSign) {
+    const lab = state.selectedSign.key !== 'top';
+    html = `<b>${lab ? `第 ${state.selectedSign.key + 1} 種顏料名牌` : '頂端名牌'}</b> 橘球左右移 · 藍球拉寬窄、拉高${lab ? '（寬高套用到所有顏料名牌）' : ''} · 雙擊還原 · Delete 關閉 · Esc 取消`;
+  } else if (state.selected != null) {
+    html = `<b>掛點 #${state.selected}</b> 拖拉移動 · Delete 刪除 · Esc 取消`;
+  } else {
+    html = '拖拉橘色球移動掛點 · 雙擊背板新增掛點' + (rack?.parts.some(isSign) ? ' · 點名牌可移動、縮放' : '');
+  }
+  el.innerHTML = html;
 }
 
 function addMount(x, y) {
@@ -492,7 +602,7 @@ const fieldHTML = (spec, value, extra = '') => `
 
 function renderParams() {
   const root = $('params');
-  root.innerHTML = `<h2>參數</h2>
+  root.innerHTML = `
     <div class="param-block">${BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('')}
       ${LINKED_BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
     <h3>加工與五金</h3>
@@ -599,21 +709,12 @@ function renderSidebar() {
   const i = rack.info;
   const extra = i.capacity - i.required;
   $('summary').innerHTML = `
-    <h2>尺寸資訊</h2>
-    <div class="stats">
-      <div class="stat"><div class="k">總寬 W</div><div class="v">${fmt(i.width)} mm</div></div>
-      <div class="stat"><div class="k">總高 H</div><div class="v">${fmt(i.height)} mm</div></div>
-      <div class="stat"><div class="k">深 D</div><div class="v">${fmt(i.depth)} mm</div></div>
-      <div class="stat"><div class="k">模組</div><div class="v">${i.mx} × ${i.my}</div></div>
-      <div class="stat"><div class="k">單模組</div><div class="v">${fmt(i.moduleW)} × ${fmt(i.moduleH)}</div></div>
-      <div class="stat"><div class="k">每模組</div><div class="v">${i.cols} 欄 × ${i.rows} 列</div></div>
-      <div class="stat"><div class="k">罐孔徑</div><div class="v">⌀ ${fmt(i.holeD)}</div></div>
-      <div class="stat"><div class="k">列距</div><div class="v">${fmt(i.rowPitch)} mm</div></div>
-      <div class="stat wide"><div class="k">容量</div><div class="v">${i.capacity} 罐 <span class="hint">（需求 ${i.required}${extra > 0 ? `，空位 ${extra}` : ''}）</span></div></div>
-      <div class="stat wide"><div class="k">零件</div><div class="v" style="font-size:12.5px;font-weight:500">${Object.entries(rack.counts).map(([k, n]) => `${KIND_NAMES[k]} ×${n}`).join('、')}</div></div>
-    </div>`;
+    <div class="dims"><b>${fmt(i.width)}</b> × <b>${fmt(i.height)}</b> × <b>${fmt(i.depth)}</b> <span>mm</span></div>
+    <div class="meta">${i.mx}×${i.my} 模組 · 每模組 ${i.cols}×${i.rows} · ${i.capacity} 罐${extra > 0 ? `（空 ${extra}）` : ''} · ${rack.parts.length} 件</div>`;
   const w = [...rack.warnings, ...(layout?.warnings || [])];
-  $('warnings').innerHTML = w.length ? `<h2>注意</h2>${w.map((s) => `<div class="warn">• ${s}</div>`).join('')}` : '';
+  $('warnings').innerHTML = w.length
+    ? `<details class="warn-box"><summary>${w.length} 項注意</summary>${w.map((t) => `<div class="warn">• ${t}</div>`).join('')}</details>`
+    : '';
   renderMounts();
 }
 
@@ -744,20 +845,21 @@ function renderBOM() {
     <p class="hint" style="margin-top:6px">把 CNC 用的板材尺寸、張數和板厚帶到板材計算機，算出要買幾張原板與裁切方式。</p>`;
 }
 
-function renderHover(part) {
-  if (!part) { $('hover-info').innerHTML = ''; return; }
+// 游標旁的零件資訊
+function showTooltip(part, e) {
+  const el = $('tooltip');
   const b = part.bounds;
-  const slots = part.holes.filter((h) => h.type === 'poly' && h.mount == null).length;
+  const slots = part.holes.filter((h) => h.type === 'poly' && h.mount == null && !h.art).length;
   const circles = part.holes.filter((h) => h.type === 'circle').length;
   const keyholes = part.holes.filter((h) => h.mount != null).length;
-  $('hover-info').innerHTML = `<h2>游標部件</h2>
-    <div class="stats">
-      <div class="stat wide"><div class="k">${KIND_NAMES[part.kind]}</div><div class="v">${part.name}</div></div>
-      <div class="stat"><div class="k">外框</div><div class="v">${fmt(b.w)} × ${fmt(b.h)}</div></div>
-      <div class="stat"><div class="k">厚</div><div class="v">${fmt(part.t)} mm</div></div>
-      <div class="stat wide"><div class="k">開孔</div><div class="v" style="font-size:12.5px;font-weight:500">榫槽 ${slots} · 圓孔 ${circles}${keyholes ? ` · 掛孔 ${keyholes}` : ''}</div></div>
-    </div>`;
+  const extra = [slots && `榫槽 ${slots}`, circles && `圓孔 ${circles}`, keyholes && `掛孔 ${keyholes}`].filter(Boolean).join(' · ');
+  el.innerHTML = `<b>${escapeAttr(part.name)}</b><span>${fmt(b.w)} × ${fmt(b.h)} × ${fmt(part.t)} mm${extra ? ` · ${extra}` : ''}</span>${isSign(part) ? '<em>點一下可移動、縮放</em>' : ''}`;
+  const r = viewport.getBoundingClientRect();
+  el.style.left = `${Math.min(e.clientX - r.left + 14, r.width - 260)}px`;
+  el.style.top = `${e.clientY - r.top + 16}px`;
+  el.hidden = false;
 }
+function hideTooltip() { $('tooltip').hidden = true; }
 
 // ---------- 互動 ----------
 const raycaster = new THREE.Raycaster();
@@ -770,46 +872,86 @@ function setPointer(e) {
   raycaster.setFromCamera(pointer, camera);
 }
 
+let downAt = null;
 renderer.domElement.addEventListener('pointerdown', (e) => {
-  if (tc.axis || tc.dragging) return;
+  if (e.button !== 0) return;
   setPointer(e);
-  const hit = raycaster.intersectObjects(mountsGroup.children, false)[0];
-  if (hit) { selectMount(hit.object.userData.mountId); return; }
-  // 點名牌：出現左右移的座標軸
+  downAt = { x: e.clientX, y: e.clientY, hit: false };
+  // 1. 名牌控制球
+  const h = raycaster.intersectObjects(handlesGroup.children.filter((o) => o.userData.handle), false)[0];
+  if (h) { downAt.hit = true; startDrag(h.object.userData.handle, h.object, h.point); renderer.domElement.setPointerCapture(e.pointerId); return; }
+  // 2. 掛點球：選取並直接拖
+  const m = state.explode === 0 && raycaster.intersectObjects(mountsGroup.children, false)[0];
+  if (m) {
+    downAt.hit = true;
+    selectMount(m.object.userData.mountId);
+    startDrag('mount', m.object, m.point);
+    renderer.domElement.setPointerCapture(e.pointerId);
+    return;
+  }
+  // 3. 點名牌：出現控制球
   if (state.explode > 0) return;
-  const partHit = raycaster.intersectObjects(partsGroup.children, true).find((h) => h.object.isMesh);
-  const part = partHit?.object.userData.part;
-  if (part && (part.kind === 'nameplate' || part.kind === 'label')) selectSign(part);
+  const part = raycaster.intersectObjects(partsGroup.children, true).find((q) => q.object.isMesh)?.object.userData.part;
+  if (isSign(part)) { downAt.hit = true; selectSign(part); }
+});
+
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (drag) { endDrag(); return; }
+  // 點空白處（不是旋轉視角）取消選取
+  if (downAt && !downAt.hit && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < 4 && (state.selected != null || state.selectedSign)) clearSelection();
+  downAt = null;
 });
 
 renderer.domElement.addEventListener('dblclick', (e) => {
-  // 雙擊背板新增掛點
   setPointer(e);
+  const part = raycaster.intersectObjects(partsGroup.children, true).find((h) => h.object.isMesh)?.object.userData.part;
+  if (!part || state.explode > 0) return;
+  // 雙擊名牌：還原滿寬置中；雙擊背板：新增掛點
+  if (isSign(part)) { resetSign(signKey(part)); return; }
   const hit = raycaster.intersectObjects(partsGroup.children, true).find((h) => h.object.isMesh);
-  if (hit && hit.object.userData.part?.kind === 'back' && state.explode === 0) addMount(snapValue(hit.point.x), snapValue(hit.point.y));
+  if (part.kind === 'back') addMount(snapValue(hit.point.x), snapValue(hit.point.y));
 });
 
 let hoverPending = false;
 renderer.domElement.addEventListener('pointermove', (e) => {
-  if (hoverPending || tc.dragging) return;
+  if (drag) { setPointer(e); moveDrag(); hideTooltip(); return; }
+  if (hoverPending) return;
   hoverPending = true;
   requestAnimationFrame(() => {
     hoverPending = false;
     setPointer(e);
-    const hit = raycaster.intersectObjects(partsGroup.children, true).find((h) => h.object.isMesh);
-    const mesh = hit?.object || null;
-    if (mesh === hovered) return;
-    if (hovered) hovered.material = materials[hovered.userData.part.kind];
-    hovered = mesh;
-    if (hovered) hovered.material = hoverMat;
-    renderHover(hovered?.userData.part);
+    // 游標形狀提示能拖的東西
+    const h = raycaster.intersectObjects(handlesGroup.children.filter((o) => o.userData.handle), false)[0];
+    const onMount = !h && state.explode === 0 && raycaster.intersectObjects(mountsGroup.children, false)[0];
+    renderer.domElement.style.cursor = h ? (h.object.userData.handle === 'top' ? 'ns-resize' : 'ew-resize') : onMount ? 'grab' : '';
+    const hit = raycaster.intersectObjects(partsGroup.children, true).find((q) => q.object.isMesh);
+    const mesh = h || onMount ? null : hit?.object || null;
+    if (mesh && isSign(mesh.userData.part)) renderer.domElement.style.cursor = 'pointer';
+    if (mesh !== hovered) {
+      if (hovered) hovered.material = materials[hovered.userData.part.kind];
+      hovered = mesh;
+      if (hovered) hovered.material = hoverMat;
+    }
+    if (hovered) showTooltip(hovered.userData.part, e); else hideTooltip();
   });
 });
+renderer.domElement.addEventListener('pointerleave', hideTooltip);
 
 window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
-  if ((e.key === 'Delete' || e.key === 'Backspace') && state.selected != null) removeMount(state.selected);
-  if (e.key === 'Escape') { clearSignSelection(); state.selected = null; tc.detach(); buildMountSpheres(); updateOverlay(); renderMounts(); renderSignOffsets(); }
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (state.selected != null) removeMount(state.selected);
+    else if (state.selectedSign) {
+      // 關閉這片名牌
+      const { key } = state.selectedSign;
+      if (key === 'top') state.nameplate.enabled = false; else (state.labels.items[key] ||= {}).on = false;
+      state.selectedSign = null;
+      saveState();
+      renderNameplate();
+      updateArtwork().then(rebuild);
+    }
+  }
+  if (e.key === 'Escape') clearSelection();
 });
 
 function setView(kind) {
@@ -835,8 +977,21 @@ $('explode').oninput = (e) => {
   applyExplode();
   mountsGroup.visible = overlayGroup.visible = state.explode === 0;
   labelRenderer.domElement.style.display = state.explode === 0 ? '' : 'none';
-  if (state.explode > 0) { clearSignSelection(); tc.detach(); } else if (state.selected != null) selectMount(state.selected);
+  if (state.explode > 0) { state.selectedSign = null; disposeGroup(handlesGroup); updateHint(); }
 };
+// 側欄分頁
+function setTab(tab) {
+  for (const b of document.querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+  for (const p of document.querySelectorAll('[data-panel]')) p.hidden = p.dataset.panel !== tab;
+  try { localStorage.setItem(STORE_KEY + '.tab', tab); } catch { /* 忽略 */ }
+}
+for (const b of document.querySelectorAll('[data-tab]')) b.onclick = () => setTab(b.dataset.tab);
+{
+  let tab = 'design';
+  try { tab = localStorage.getItem(STORE_KEY + '.tab') || tab; } catch { /* 忽略 */ }
+  setTab(document.querySelector(`[data-panel="${tab}"]`) ? tab : 'design');
+}
+
 function setSidebar(open) {
   $('sidebar').classList.toggle('collapsed', !open);
   document.body.classList.toggle('sidebar-closed', !open);
@@ -982,116 +1137,90 @@ async function updateArtwork() {
 }
 
 function renderNameplate() {
-  const np = state.nameplate;
-  $('nameplate').innerHTML = `<h2>展示名牌 <span class="hint">選用</span></h2>
-    <label class="check"><input type="checkbox" id="np-enabled" ${np.enabled ? 'checked' : ''}/> 在每架頂端加一片名牌</label>
-    <div id="np-body" ${np.enabled ? '' : 'hidden'}>
-      <p class="hint">名牌立在頂板上，兩支榫頭插進頂板。可匯入圖片（Logo、手寫字），或直接打字。</p>
-      <div class="param-block">
-        <label class="field"><span>加工方式</span><span class="input"><select id="np-mode">
-          ${NAMEPLATE_MODES.map(([v, l]) => `<option value="${v}" ${np.mode === v ? 'selected' : ''}>${l}</option>`).join('')}
-        </select></span></label>
-        <label class="field"><span>外形</span><span class="input"><select id="np-shape">
-          ${NAMEPLATE_SHAPES.map(([v, l]) => `<option value="${v}" ${np.shape === v ? 'selected' : ''}>${l}</option>`).join('')}
-        </select></span></label>
-        <label class="field"><span>名牌高度<small>高出木架頂端</small></span><span class="input"><input type="number" id="np-height" min="20" max="300" step="1" value="${np.height}"/><span class="unit">mm</span></span></label>
-        <label class="field"><span>名牌寬度<small>空白 = 滿寬</small></span><span class="input"><input type="number" id="np-width" min="60" step="1" placeholder="滿寬" value="${np.width ?? ''}"/><span class="unit">mm</span></span></label>
-        <label class="field"><span>左右位移<small id="np-offset-note">正值往右；也可在 3D 點名牌拖拉</small></span><span class="input"><input type="number" id="np-offset" step="1" value="${np.offset || 0}"/><span class="unit">mm</span></span></label>
+  const np = state.nameplate, lb = state.labels;
+  const opts = (list, cur) => list.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('');
+  $('nameplate').innerHTML = `
+    <p class="hint">在 3D 點名牌：橘球左右移、藍球拉寬窄與高度，雙擊還原。</p>
+    <div class="card">
+      <label class="card-head"><span>頂端名牌</span><input type="checkbox" class="switch" id="np-enabled" ${np.enabled ? 'checked' : ''}/></label>
+      <div id="np-body" ${np.enabled ? '' : 'hidden'}>
+        <div class="pair">
+          <label class="mini"><span>外形</span><select id="np-shape">${opts(NAMEPLATE_SHAPES, np.shape)}</select></label>
+          <label class="mini"><span>加工</span><select id="np-mode">${opts(NAMEPLATE_MODES, np.mode)}</select></label>
+        </div>
+        <div class="art-row">
+          <span class="input"><input type="text" id="np-text" value="${escapeAttr(np.text)}" maxlength="40" placeholder="名牌文字" aria-label="名牌文字"/></span>
+          <label class="button">圖片<input type="file" id="np-file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" hidden/></label>
+          <button id="np-clear" class="ghost" ${np.image ? '' : 'hidden'} title="移除圖片、改用文字">✕</button>
+        </div>
+        <div class="np-preview"><canvas id="np-canvas" width="300" height="80" aria-label="名牌圖案預覽"></canvas></div>
+        <div class="art-row">
+          <label class="mini grow"><span>黑白門檻</span><input type="range" id="np-threshold" min="10" max="245" step="1" value="${np.threshold}"/></label>
+          <label class="check"><input type="checkbox" id="np-invert" ${np.invert ? 'checked' : ''}/> 反轉</label>
+        </div>
+        <p class="hint" id="np-status"></p>
+        <button id="np-reset" class="ghost">還原滿寬置中</button>
       </div>
-      <div class="offset-slider">
-        <input type="range" id="np-offset-range" min="0" max="0" step="1" value="${np.offset || 0}" aria-label="頂端名牌左右位移"/>
-        <button id="np-center" class="ghost">置中</button>
-      </div>
-      <div class="param-block">
-        <label class="field"><span>名牌文字<small>沒有匯入圖片時使用</small></span><span class="input"><input type="text" id="np-text" value="${escapeAttr(np.text)}" maxlength="40"/></span></label>
-        <label class="field"><span>黑白門檻<small>越大，越多灰色變成墨色</small></span><input type="range" id="np-threshold" min="10" max="245" step="1" value="${np.threshold}"/></label>
-      </div>
-      <label class="check"><input type="checkbox" id="np-invert" ${np.invert ? 'checked' : ''}/> 反轉黑白（淺色圖案、深色背景時使用）</label>
-      <div class="row-buttons">
-        <label class="button">匯入圖片<input type="file" id="np-file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" hidden/></label>
-        <button id="np-clear" class="ghost" ${np.image ? '' : 'hidden'}>改用文字</button>
-      </div>
-      <div class="np-preview"><canvas id="np-canvas" width="300" height="80" aria-label="名牌圖案預覽"></canvas></div>
-      <p class="hint" id="np-status"></p>
     </div>
-    <h3>顏料名牌</h3>
-    <label class="check"><input type="checkbox" id="lb-enabled" ${state.labels.enabled ? 'checked' : ''}/> 每種顏料各有一片名牌</label>
-    <div id="lb-body" ${state.labels.enabled ? '' : 'hidden'}>
-      <p class="hint">名牌立在固定孔板前緣、罐子前方，榫頭插進孔板，不影響取罐。每片可各自關閉；開啟時前緣留邊會自動加寬。</p>
-      <div class="param-block">
-        <label class="field"><span>加工方式</span><span class="input"><select id="lb-mode">
-          ${NAMEPLATE_MODES.map(([v, l]) => `<option value="${v}" ${state.labels.mode === v ? 'selected' : ''}>${l}</option>`).join('')}
-        </select></span></label>
-        <label class="field"><span>名牌高度<small>高出固定孔板</small></span><span class="input"><input type="number" id="lb-height" min="8" max="60" step="1" value="${state.labels.height}"/><span class="unit">mm</span></span></label>
-        <label class="field"><span>名牌寬度<small>空白 = 滿寬；變窄後每片可各自左右移</small></span><span class="input"><input type="number" id="lb-width" min="30" step="1" placeholder="滿寬" value="${state.labels.width ?? ''}"/><span class="unit">mm</span></span></label>
+    <div class="card">
+      <label class="card-head"><span>顏料名牌 <small>每種一片，立在罐子前方</small></span><input type="checkbox" class="switch" id="lb-enabled" ${lb.enabled ? 'checked' : ''}/></label>
+      <div id="lb-body" ${lb.enabled ? '' : 'hidden'}>
+        <div class="pair">
+          <label class="mini"><span>加工</span><select id="lb-mode">${opts(NAMEPLATE_MODES, lb.mode)}</select></label>
+          <div class="row-buttons tight">
+            <button id="lb-all-on" class="ghost">全開</button>
+            <button id="lb-all-off" class="ghost">全關</button>
+            <button id="lb-reset" class="ghost">還原</button>
+          </div>
+        </div>
+        <div id="lb-list" class="label-list"></div>
+        <p class="hint" id="lb-status"></p>
       </div>
-      <div class="row-buttons">
-        <button id="lb-all-on" class="ghost">全部開啟</button>
-        <button id="lb-all-off" class="ghost">全部關閉</button>
-        <button id="lb-center" class="ghost">全部置中</button>
-      </div>
-      <p class="hint label-head"><span>開關 · 顏色 · 名稱</span><span>左右位移 mm</span></p>
-      <div id="lb-list" class="label-list"></div>
-      <p class="hint" id="lb-status"></p>
     </div>`;
   renderLabelList();
-  const lb = state.labels;
-  const labelsChanged = () => { saveState(); updateArtwork().then(rebuild); };
-  $('lb-enabled').onchange = (e) => { lb.enabled = e.target.checked; $('lb-body').hidden = !lb.enabled; labelsChanged(); };
-  $('lb-mode').onchange = (e) => { lb.mode = e.target.value; labelsChanged(); };
-  $('lb-height').oninput = (e) => { const v = Number(e.target.value); if (v >= 8 && v <= 60) { lb.height = v; clearTimeout(lbTimer); lbTimer = setTimeout(() => { saveState(); rebuild(); }, 250); } };
-  const setAll = (on) => { for (let k = 0; k < kindsCount(); k++) (lb.items[k] ||= {}).on = on; renderLabelList(); labelsChanged(); };
-  $('lb-all-on').onclick = () => setAll(true);
-  $('lb-all-off').onclick = () => setAll(false);
-  $('np-shape').onchange = (e) => { np.shape = e.target.value; saveState(); rebuild(); };
-
-  // 寬度與左右位移（不需重新描圖，只重建幾何）
-  const geomLater = () => { clearTimeout(lbTimer); lbTimer = setTimeout(() => { saveState(); rebuild(); }, 150); };
-  const numOrNull = (v) => (v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
-  $('np-width').oninput = (e) => { np.width = numOrNull(e.target.value); geomLater(); };
-  const setTopOffset = (v) => { np.offset = Number(v) || 0; $('np-offset').value = np.offset; $('np-offset-range').value = np.offset; geomLater(); };
-  $('np-offset').oninput = (e) => { if (e.target.value !== '') setTopOffset(e.target.value); };
-  $('np-offset-range').oninput = (e) => setTopOffset(e.target.value);
-  $('np-center').onclick = () => setTopOffset(0);
-  $('lb-width').oninput = (e) => { lb.width = numOrNull(e.target.value); geomLater(); };
-  $('lb-center').onclick = () => {
-    for (const it of lb.items) if (it) it.offset = 0;
-    syncSignInputs();
-    geomLater();
-  };
-  const changed = (rerender = true) => {
-    saveState();
-    updateArtwork().then(() => { if (rerender) rebuild(); });
-  };
-  $('np-enabled').onchange = (e) => { np.enabled = e.target.checked; $('np-body').hidden = !np.enabled; changed(); };
-  $('np-mode').onchange = (e) => { np.mode = e.target.value; changed(); };
+  const artChanged = () => { saveState(); updateArtwork().then(rebuild); };
   let timer = null;
   const later = (fn) => { clearTimeout(timer); timer = setTimeout(fn, 250); };
-  $('np-height').oninput = (e) => { const v = Number(e.target.value); if (v >= 20 && v <= 300) { np.height = v; later(() => { saveState(); rebuild(); }); } };
-  $('np-text').oninput = (e) => { np.text = e.target.value; if (!np.image) later(changed); };
-  $('np-threshold').oninput = (e) => { np.threshold = Number(e.target.value); later(changed); };
-  $('np-invert').onchange = (e) => { np.invert = e.target.checked; changed(); };
-  $('np-clear').onclick = () => { np.image = null; $('np-clear').hidden = true; changed(); };
+  $('np-enabled').onchange = (e) => { np.enabled = e.target.checked; $('np-body').hidden = !np.enabled; artChanged(); };
+  $('np-mode').onchange = (e) => { np.mode = e.target.value; artChanged(); };
+  $('np-shape').onchange = (e) => { np.shape = e.target.value; saveState(); rebuild(); };
+  $('np-text').oninput = (e) => { np.text = e.target.value; if (!np.image) later(artChanged); };
+  $('np-threshold').oninput = (e) => { np.threshold = Number(e.target.value); later(artChanged); };
+  $('np-invert').onchange = (e) => { np.invert = e.target.checked; artChanged(); };
+  $('np-clear').onclick = () => { np.image = null; $('np-clear').hidden = true; artChanged(); };
+  $('np-reset').onclick = () => resetSign('top');
+  $('lb-enabled').onchange = (e) => { lb.enabled = e.target.checked; $('lb-body').hidden = !lb.enabled; artChanged(); };
+  $('lb-mode').onchange = (e) => { lb.mode = e.target.value; artChanged(); };
+  const setAll = (on) => { for (let k = 0; k < kindsCount(); k++) (lb.items[k] ||= {}).on = on; renderLabelList(); artChanged(); };
+  $('lb-all-on').onclick = () => setAll(true);
+  $('lb-all-off').onclick = () => setAll(false);
+  $('lb-reset').onclick = () => {
+    lb.width = null;
+    lb.height = 18;
+    for (const it of lb.items) if (it) it.offset = 0;
+    saveState();
+    rebuild();
+  };
   $('np-file').onchange = async (e) => {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file) return;
     try {
-      // 縮到 2400px 以內再存：夠雷射點陣用，也避免瀏覽器儲存空間不足
+      // 縮到 3000px 以內再存：夠雷射點陣用，也避免瀏覽器儲存空間不足
       const img = await loadImage(await readFileAsDataURL(file));
       const longSide = Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height);
       // SVG 是向量圖，直接放大畫；點陣圖只縮不放
-      const s = file.type === 'image/svg+xml' ? 3000 / longSide : Math.min(1, 3000 / longSide);
+      const sc = file.type === 'image/svg+xml' ? 3000 / longSide : Math.min(1, 3000 / longSide);
       const c = document.createElement('canvas');
-      c.width = Math.max(1, Math.round((img.naturalWidth || img.width) * s));
-      c.height = Math.max(1, Math.round((img.naturalHeight || img.height) * s));
+      c.width = Math.max(1, Math.round((img.naturalWidth || img.width) * sc));
+      c.height = Math.max(1, Math.round((img.naturalHeight || img.height) * sc));
       const ctx = c.getContext('2d');
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, c.width, c.height);
       ctx.drawImage(img, 0, 0, c.width, c.height);
       np.image = c.toDataURL('image/png');
       $('np-clear').hidden = false;
-      changed();
+      artChanged();
     } catch (err) {
       $('np-status').textContent = `無法讀取圖片：${err.message}`;
     }
@@ -1100,7 +1229,7 @@ function renderNameplate() {
 
 let lbTimer = null, labelListK = -1;
 
-/** 每種顏料一列：開關、顏色點（與 3D 罐子同色）、名牌文字 */
+/** 每種顏料一列：開關、顏色點（與 3D 罐子同色，點一下在 3D 選取那片名牌）、名牌文字 */
 function renderLabelList() {
   const list = $('lb-list');
   if (!list) return;
@@ -1108,22 +1237,14 @@ function renderLabelList() {
   labelListK = K;
   list.innerHTML = Array.from({ length: K }, (_, k) => {
     const hue = Math.round(((k * 0.618034) % 1) * 360);
-    return `<label class="label-row">
+    const sel = state.selectedSign?.key === k ? ' selected' : '';
+    return `<div class="label-row${sel}">
       <input type="checkbox" data-lb-on="${k}" ${labelOn(k) ? 'checked' : ''} aria-label="第 ${k + 1} 種名牌開關"/>
-      <span class="swatch" style="background:hsl(${hue} 55% 55%)"></span>
+      <button class="swatch" data-lb-pick="${k}" style="background:hsl(${hue} 55% 55%)" title="在 3D 選取這片名牌" aria-label="選取第 ${k + 1} 種名牌"></button>
       <span class="input"><input type="text" data-lb-text="${k}" maxlength="24" placeholder="顏料 ${k + 1}" value="${escapeAttr(state.labels.items[k]?.text || '')}"/></span>
-      <span class="input offset"><input type="number" data-lb-off="${k}" step="1" value="${state.labels.items[k]?.offset || 0}" aria-label="第 ${k + 1} 種名牌左右位移"/></span>
-    </label>`;
+    </div>`;
   }).join('');
   list.oninput = (e) => {
-    const off = Number(e.target.dataset.lbOff);
-    if (!Number.isNaN(off)) {
-      if (e.target.value === '') return;
-      (state.labels.items[off] ||= {}).offset = Number(e.target.value) || 0;
-      clearTimeout(lbTimer);
-      lbTimer = setTimeout(() => { saveState(); rebuild(); }, 150);
-      return;
-    }
     const k = Number(e.target.dataset.lbText);
     if (Number.isNaN(k)) return;
     (state.labels.items[k] ||= {}).text = e.target.value;
@@ -1137,40 +1258,12 @@ function renderLabelList() {
     saveState();
     updateArtwork().then(rebuild);
   };
-}
-
-/** 依重建結果更新位移欄位的範圍；超出範圍的值會被拉回並顯示實際值 */
-function renderSignOffsets(live = null) {
-  if (!rack) return;
-  const ns = rack.info.nameplateSpan;
-  const range = $('np-offset-range'), note = $('np-offset-note');
-  if (range && ns) {
-    const off = live?.key === 'top' ? live.offset : ns.offset;
-    range.min = -ns.maxOffset; range.max = ns.maxOffset; range.disabled = ns.maxOffset <= 0;
-    if (document.activeElement !== range) range.value = off;
-    if (document.activeElement !== $('np-offset')) $('np-offset').value = off;
-    if (!live) state.nameplate.offset = ns.offset;
-    note.textContent = ns.maxOffset > 0
-      ? `可移 ±${fmt(ns.maxOffset)} mm（名牌寬 ${fmt(ns.width)}）${state.selectedSign === 'top' ? ' · 3D 座標軸已出現，可直接拖拉' : '；也可在 3D 點名牌拖拉'}`
-      : `目前滿寬 ${fmt(ns.width)} mm，先把名牌寬度改窄才能左右移`;
-    note.classList.toggle('adjusted', !!ns.widthClamped);
-  }
-  for (const [k, sp] of Object.entries(rack.info.labelSpans || {})) {
-    const input = document.querySelector(`[data-lb-off="${k}"]`);
-    if (!input) continue;
-    const off = live?.key === Number(k) ? live.offset : sp.offset;
-    input.min = -sp.maxOffset; input.max = sp.maxOffset;
-    input.disabled = sp.maxOffset <= 0;
-    input.title = sp.maxOffset > 0 ? `可移 ±${fmt(sp.maxOffset)} mm` : '滿寬，先把名牌寬度改窄';
-    if (document.activeElement !== input) input.value = off;
-    if (!live && state.labels.items[k]) state.labels.items[k].offset = sp.offset;
-    input.closest('.label-row')?.classList.toggle('selected', state.selectedSign === Number(k));
-  }
-}
-
-function syncSignInputs() {
-  if ($('np-offset')) { $('np-offset').value = state.nameplate.offset || 0; $('np-offset-range').value = state.nameplate.offset || 0; }
-  for (const input of document.querySelectorAll('[data-lb-off]')) input.value = state.labels.items[input.dataset.lbOff]?.offset || 0;
+  list.onclick = (e) => {
+    const k = Number(e.target.dataset.lbPick);
+    if (Number.isNaN(k)) return;
+    const part = rack && signParts(k)[0];
+    if (part) selectSign(part);
+  };
 }
 
 function renderLabelStatus() {
@@ -1189,7 +1282,6 @@ function renderLabelStatus() {
 
 function renderNameplateStatus() {
   renderLabelStatus();
-  renderSignOffsets();
   const cv = $('np-canvas'), status = $('np-status');
   if (!cv) return;
   const ctx = cv.getContext('2d');
@@ -1278,8 +1370,8 @@ renderer.setAnimationLoop(() => {
 
 window.__rack = () => rack; // 除錯用
 window.__artUrl = () => artwork.dataUrl;
-// 除錯／瀏覽器測試用：名牌座標軸位置、世界座標 → 螢幕座標
-window.__signProxy = () => signProxy.position.toArray();
+// 除錯／瀏覽器測試用：名牌控制球位置、世界座標 → 螢幕座標
+window.__handles = () => handlesGroup.children.filter((o) => o.userData.handle).map((o) => ({ type: o.userData.handle, pos: o.position.toArray() }));
 window.__project = (w) => {
   const v = Array.isArray(w) ? new THREE.Vector3(...w) : new THREE.Vector3(w.x, w.y, w.z);
   v.project(camera);

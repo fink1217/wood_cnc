@@ -17,6 +17,20 @@
 <body>
   <div id="viewport"></div>
 
+  <!-- 畫面上的直覺操作：視角、顯示、爆炸圖、提示 -->
+  <div id="toolbar" role="toolbar" aria-label="檢視">
+    <div class="seg">
+      <button id="view-front" title="正視">正視</button>
+      <button id="view-iso" title="等角">等角</button>
+      <button id="view-side" title="側視">側視</button>
+    </div>
+    <label class="tool-toggle"><input type="checkbox" id="show-cans" checked /><span>罐子</span></label>
+    <label class="tool-toggle"><input type="checkbox" id="show-dims" checked /><span>尺寸</span></label>
+    <label class="tool-range"><span>爆炸</span><input type="range" id="explode" min="0" max="1" step="0.01" value="0" /></label>
+  </div>
+  <div id="hint" aria-live="polite"></div>
+  <div id="tooltip" hidden></div>
+
   <button id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true" title="收合側欄">
     <span class="when-open">收合 ›</span><span class="when-closed">‹ 展開側欄</span>
   </button>
@@ -24,66 +38,58 @@
   <aside id="sidebar">
     <header>
       <h1>顏料罐木架</h1>
+      <div id="summary"></div>
+      <div id="warnings"></div>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="design">設計</button>
+        <button role="tab" data-tab="signs">名牌</button>
+        <button role="tab" data-tab="mounts">掛點</button>
+        <button role="tab" data-tab="output">材料</button>
+      </nav>
     </header>
 
-    <section id="summary"></section>
+    <div class="panel" data-panel="design">
+      <section id="params"></section>
+      <section>
+        <h2>多架組裝</h2>
+        <div id="assembly" class="param-block"></div>
+      </section>
+    </div>
 
-    <section id="params"></section>
+    <div class="panel" data-panel="signs">
+      <section id="nameplate"></section>
+    </div>
 
-    <section>
-      <h2>多架組裝</h2>
-      <p class="hint">同一組設計重複並排或堆疊，連接件與材料表會一起更新。</p>
-      <div id="assembly" class="param-block"></div>
-    </section>
+    <div class="panel" data-panel="mounts">
+      <section>
+        <div class="row-buttons">
+          <button id="mount-add">新增掛點</button>
+          <button id="mount-auto">每模組 2 個</button>
+          <button id="mount-clear" class="ghost">全部清除</button>
+        </div>
+        <div id="mount-edit"></div>
+        <div id="mount-list"></div>
+        <div id="mount-pairs"></div>
+      </section>
+    </div>
 
-    <section id="nameplate"></section>
-
-    <section id="connectors"></section>
-
-    <section>
-      <h2>牆面掛點</h2>
-      <p class="hint">點選球體後拖拉座標軸移動；Delete 刪除。</p>
-      <div class="row-buttons">
-        <button id="mount-add">新增掛點</button>
-        <button id="mount-auto">自動配置</button>
-        <button id="mount-clear" class="ghost">全部清除</button>
-      </div>
-      <div id="mount-edit"></div>
-      <div id="mount-list"></div>
-      <div id="mount-pairs"></div>
-    </section>
-
-    <section>
-      <h2>檢視</h2>
-      <label class="check"><input type="checkbox" id="show-cans" checked /> 顯示顏料罐</label>
-      <label class="check"><input type="checkbox" id="show-dims" checked /> 顯示尺寸線</label>
-      <label class="field"><span>爆炸圖</span><input type="range" id="explode" min="0" max="1" step="0.01" value="0" /></label>
-      <div class="row-buttons">
-        <button id="view-front">正視</button>
-        <button id="view-iso">等角</button>
-        <button id="view-side">側視</button>
-      </div>
-    </section>
-
-    <section id="bom"></section>
-
-    <section id="hover-info"></section>
-    <section id="warnings"></section>
-
-    <section>
-      <h2>匯出</h2>
-      <div class="row-buttons">
-        <button id="export-zip" class="primary">全部打包 ZIP</button>
-        <button id="export-dxf">DXF</button>
-        <button id="export-svg">SVG</button>
-        <button id="export-bom">材料表 CSV</button>
-        <button id="export-json">參數 JSON</button>
-        <label class="button ghost">匯入 JSON<input type="file" id="import-json" accept="application/json" hidden /></label>
-      </div>
-      <p class="hint" id="layout-info"></p>
-      <p id="export-msg"></p>
-      <button id="reset" class="ghost">恢復預設參數</button>
-    </section>
+    <div class="panel" data-panel="output">
+      <section>
+        <div class="row-buttons">
+          <button id="export-zip" class="primary">全部打包 ZIP</button>
+          <button id="export-dxf">DXF</button>
+          <button id="export-svg">SVG</button>
+          <button id="export-bom">CSV</button>
+          <button id="export-json">JSON</button>
+          <label class="button ghost">匯入 JSON<input type="file" id="import-json" accept="application/json" hidden /></label>
+        </div>
+        <p class="hint" id="layout-info"></p>
+        <p id="export-msg"></p>
+      </section>
+      <section id="connectors"></section>
+      <section id="bom"></section>
+      <section><button id="reset" class="ghost">恢復預設參數</button></section>
+    </div>
   </aside>
 
   <script type="module" src="src/main.js"></script>
