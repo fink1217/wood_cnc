@@ -149,7 +149,7 @@ export function toDXF(layout) {
   return L.join('\n') + '\n';
 }
 
-const KIND_NAMES = { side: '側板', back: '背板', shelf: '層板', holeplate: '固定孔板', top: '頂板', clip: 'U 型卡扣', splice: '垂直連接板', nameplate: '展示名牌', label: '顏料名牌' };
+const KIND_NAMES = { side: '側板', back: '背板', shelf: '層板', holeplate: '固定孔板', top: '頂蓋頂板', capside: '頂蓋側板', clip: 'U 型卡扣', splice: '垂直連接板', nameplate: '展示名牌', label: '顏料名牌' };
 
 export function toBOM(rack) {
   const groups = new Map();

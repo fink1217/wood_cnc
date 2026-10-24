@@ -39,12 +39,35 @@ test('2×2 模組：格數與容量', () => {
   assert.deepEqual(r.warnings, []);
   assert.ok(r.info.capacity >= r.info.required);
   assert.equal(r.counts.side, 8);
-  assert.equal(r.counts.clip, 8); // 1 條垂直接縫 × 2 列 × (上 2 + 下 2)
-  assert.equal(r.counts.splice, 4); // 1 條垂直接縫 × 2 欄 × 左右
+  assert.equal(r.counts.capside, 4, '每欄一組頂蓋');
+  assert.equal(r.counts.clip, 2 * 4 + 2, '1 條垂直接縫 × 2 列 × 上下 2 + 頂蓋下緣 2');
+  assert.equal(r.counts.splice, 2 * 2 * 2, '每欄 2 條接縫（含頂蓋）× 左右');
   assert.equal(r.cans.length, GRID.kinds * GRID.perKind);
   assert.ok(r.mounts.every((m) => m.valid));
   const keyholes = r.parts.flatMap((p) => p.holes).filter((h) => h.mount != null);
   assert.equal(keyholes.length, r.mounts.length);
+});
+
+test('上下接縫處仍是完整罐位：列距在整個高度上一致', () => {
+  const r = buildRack({ ...DEFAULTS, racksY: 2 }, []);
+  const L = r.layout;
+  const shelves = r.parts.filter((p) => p.kind === 'shelf' && p.module[0] === 0).map((p) => p.origin[1]).sort((a, b) => a - b);
+  for (let k = 1; k < shelves.length; k++) assert.ok(Math.abs(shelves[k] - shelves[k - 1] - L.rowPitch) < 1e-6, `第 ${k} 個間距`);
+  // 最上一列的天花板 = 頂蓋頂板底面
+  const cap = r.parts.find((p) => p.kind === 'top');
+  assert.ok(Math.abs(cap.origin[1] - L.t - (shelves.at(-1) + L.rowPitch - L.t)) < 1e-6);
+});
+
+test('接縫處的連接板與卡扣腳都在罐子旁邊，不擋罐位', () => {
+  const r = buildRack({ ...DEFAULTS, racksX: 2, racksY: 2 }, []);
+  const L = r.layout;
+  const can = r.cans.reduce((a, c) => (c.x < a.x ? c : a));
+  const canLeft = can.x - can.r;
+  assert.ok(canLeft - L.t >= L.t + 1, '最左邊的罐子與側板內面之間放得下連接板');
+  assert.ok(canLeft - L.t >= L.clipLegW + 1, '也放得下卡扣腳');
+  // 接縫下方的連接板與卡扣腳都在最上一列孔板之上
+  assert.ok(L.H - L.spliceDown > L.holePlateY.at(-1) + L.t);
+  assert.ok(L.H - L.nd - L.clipLeg > L.holePlateY.at(-1) + L.t);
 });
 
 test('所有孔都在零件外框內', () => {
@@ -76,12 +99,13 @@ test('掛點落在側板或榫槽上時判定無效', () => {
   assert.equal(validateMount(L, -10, 10).valid, false);
 });
 
-test('單一模組（不延伸）沒有卡扣與卡榫', () => {
+test('單一模組：沒有卡扣，只有與頂蓋之間的連接板', () => {
   const r = buildRack({ ...DEFAULTS, kinds: 2, perKind: 3 }, []);
   assert.equal(r.info.mx, 1);
   assert.equal(r.info.my, 1);
   assert.equal(r.counts.clip, undefined);
-  assert.equal(r.counts.splice, undefined);
+  assert.equal(r.counts.splice, 2);
+  assert.equal(r.counts.capside, 2);
 });
 
 test('匯出 SVG / DXF / BOM', () => {
@@ -175,10 +199,10 @@ test('多架組裝：模組、連接件、罐數與五金都跟著倍增', () =>
   assert.equal(many.info.mx, one.info.mx * 3);
   assert.equal(many.info.my, one.info.my * 2);
   assert.equal(many.cans.length, one.cans.length * 6);
-  assert.equal(many.counts.clip, (3 - 1) * 2 * 4);
-  assert.equal(many.counts.splice, 3 * (2 - 1) * 2);
+  assert.equal(many.counts.clip, (3 - 1) * 2 * 4 + (3 - 1) * 2);
+  assert.equal(many.counts.splice, 3 * 2 * 2);
   const bolts = many.info.hardware.filter((h) => h.name.includes('螺栓')).reduce((n, h) => n + h.qty, 0);
-  assert.equal(bolts, (3 - 1) * 2 * many.info.rows + 3 * 1 * 8);
+  assert.equal(bolts, (3 - 1) * 2 * many.info.rows + 3 * 2 * 8);
 });
 
 test('垂直連接板螺栓孔與上下模組側板的孔對齊', () => {
@@ -197,12 +221,11 @@ test('垂直連接板螺栓孔與上下模組側板的孔對齊', () => {
   }
 });
 
-test('連接板不碰到卡扣腳、頂板與背板', () => {
+test('連接板不碰到卡扣腳與背板', () => {
   const L = deriveLayout(DEFAULTS);
   assert.ok(L.spliceZ[0] > L.clipZ[0] + L.t / 2, '在後卡扣之前');
   assert.ok(L.spliceZ[1] < L.clipZ[1] - L.t / 2, '在前卡扣之後');
   assert.ok(L.spliceZ[0] > 2 * L.t, '在背板前方');
-  assert.ok(L.H - L.spliceHalfH > L.topY + L.t, '在頂板上方');
 });
 
 test('板材計算機連結帶入尺寸、張數、板厚', async () => {

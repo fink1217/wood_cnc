@@ -50,18 +50,15 @@ test('maskToArtwork 正規化成寬 1', () => {
 const art = (() => { const { m, w, h } = sampleMask(); return maskToArtwork(m, w, h); })();
 const withPlate = (mode) => buildRack(DEFAULTS, [], { nameplate: { enabled: true, mode, height: 60, art } });
 
-test('名牌只在最上排模組，頂板開出對應的榫槽', () => {
+test('名牌立在頂蓋上，每欄一片，頂蓋頂板開出對應的榫槽', () => {
   const r = buildRack({ ...DEFAULTS, racksX: 2, racksY: 2 }, [], { nameplate: { enabled: true, mode: 'engrave', height: 60, art } });
   const plates = r.parts.filter((p) => p.kind === 'nameplate');
   assert.equal(plates.length, r.info.mx);
-  assert.ok(plates.every((p) => p.module[1] === r.info.my - 1));
-  const top = r.parts.find((p) => p.kind === 'top');
-  assert.equal(top.holes.length, 2);
-  // 名牌榫頭寬 + 公差 = 頂板榫槽寬
-  const plate = plates[0];
-  const tabW = bbox(plate.outer.filter(([, y]) => y < -1e-6)).w;
-  assert.ok(tabW > 0);
-  assert.ok(r.info.nameplateH === 60);
+  assert.ok(plates.every((p) => p.module[1] === r.info.my), '在頂蓋那一層');
+  const tops = r.parts.filter((p) => p.kind === 'top');
+  assert.equal(tops.length, r.info.mx, '只有頂蓋有頂板');
+  assert.equal(tops[0].holes.length, 2);
+  assert.equal(r.info.nameplateH, 60);
 });
 
 test('名牌不開啟時頂板沒有榫槽', () => {
@@ -100,17 +97,20 @@ test('雷射模式：SVG 內嵌點陣並保留位置，DXF 有 ENGRAVE 圖層', 
   assert.doesNotMatch(toSVG(lay), /<image/);
 });
 
-test('罐頂到上層距離：自動 = 固定孔板高度 + 5，太小會被調高', () => {
+test('罐頂到上層距離：最小值 = 固定孔板高度 + 8，只能往上調', () => {
   const a = resolveParams(DEFAULTS);
-  assert.equal(a.P.topGap, a.P.retainHeight + 5);
+  assert.equal(a.P.topGap, a.P.retainHeight + 8);
   assert.equal(a.fields.topGap.auto, true);
   const b = resolveParams({ ...DEFAULTS, topGap: 3 });
   assert.equal(b.fields.topGap.adjusted, true);
-  assert.equal(b.P.topGap, b.P.retainHeight + 2);
+  assert.equal(b.P.topGap, b.P.retainHeight + 8);
   const c = resolveParams({ ...DEFAULTS, topGap: 80 });
   assert.equal(c.P.topGap, 80);
   assert.equal(c.fields.topGap.adjusted, false);
-  // 列距 = 板厚 + 罐高 + 罐頂到上層距離
+  // 孔板抬高時，罐頂距離的下限跟著抬高
+  const d = resolveParams({ ...DEFAULTS, retainHeight: 30, topGap: 20 });
+  assert.equal(d.P.topGap, 38);
   const r = buildRack({ ...DEFAULTS, topGap: 80 }, []);
   assert.equal(r.info.rowPitch, DEFAULTS.thickness + DEFAULTS.canHeight + 80);
 });
+

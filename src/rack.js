@@ -30,6 +30,7 @@ export const DEFAULTS = {
   holeClearance: null,
   retainHeight: null,
   topGap: null,
+  sideClear: null,
   frontMargin: null,
   margin: null,
   maxCols: null,
@@ -70,9 +71,10 @@ export const ASSEMBLY_SPEC = [
 export const ADVANCED_SPEC = [
   { key: 'canGap', label: '罐間距', unit: 'mm', min: 0, max: 40, step: 0.5 },
   { key: 'holeClearance', label: '罐孔餘隙', unit: 'mm', min: 0, max: 10, step: 0.1 },
+  { key: 'sideClear', label: '罐子到側板間距', unit: 'mm', min: 0, max: 60, step: 0.5 },
   { key: 'retainHeight', label: '固定孔板高度', unit: 'mm', min: 0, max: 200, step: 1 },
   { key: 'frontMargin', label: '前緣留邊', unit: 'mm', min: 0, max: 100, step: 1 },
-  { key: 'margin', label: '側板上下邊距', unit: 'mm', min: 0, max: 80, step: 1 },
+  { key: 'margin', label: '底部與頂蓋邊距', unit: 'mm', min: 0, max: 80, step: 1 },
   { key: 'maxCols', label: '每模組最多欄', unit: '罐', min: 1, max: 40, step: 1, int: true },
   { key: 'maxRows', label: '每模組最多列', unit: '列', min: 1, max: 20, step: 1, int: true },
   { key: 'bitDia', label: '銑刀直徑', unit: 'mm', min: 0, max: 12.7, step: 0.05 },
@@ -99,7 +101,8 @@ export function normalizeParams(input = {}) {
     const v = String(input[spec.key] ?? '');
     if (spec.options.some(([o]) => o === v)) P[spec.key] = v;
   }
-  P.labelsOn = input.labelsOn === true; // 有任何顏料名牌開啟（影響前緣留邊）
+  P.labelsOn = input.labelsOn === true; // 有任何顏料名牌開啟（影響前緣留邊與孔板高度）
+  P.labelH = clampNum(Number(input.labelH) || 12, 6, 60); // 顏料名牌高度 = 層板與孔板之間的空隙
   for (const spec of [...LINKED_BASIC_SPEC, ...ADVANCED_SPEC]) {
     const v = input[spec.key];
     const n = Number(v);
@@ -134,7 +137,8 @@ export function resolveParams(input = {}) {
       if (kind === 'min' && v < limit - 1e-9) { v = limit; if (!auto) note = `已調為 ${r2(v)}：${why}`; }
     }
     v = r2(v);
-    fields[key] = { value: v, auto, note, adjusted: !auto && Math.abs(v - manual) > 1e-9 };
+    const mins = bounds.filter(([kind, limit]) => kind === 'min' && Number.isFinite(limit)).map(([, limit]) => limit);
+    fields[key] = { value: v, auto, note, adjusted: !auto && Math.abs(v - manual) > 1e-9, min: mins.length ? r2(Math.max(...mins)) : null };
     return v;
   };
 
@@ -154,19 +158,33 @@ export function resolveParams(input = {}) {
   const canGap = resolve('canGap', Math.max(6, Math.ceil(holeClearance + 4), Math.ceil(t * 0.6)), '依餘隙與板厚',
     [['min', holeClearance + 2, '罐孔之間至少要留 2mm 木料']]);
 
-  const minRetain = r2(t + tol + 3);
-  const retainHeight = resolve('retainHeight', clampNum(Math.round(h * 0.35), minRetain, h * 0.6), '罐高 × 35%',
-    [['max', r1(h * 0.8), '不超過罐高 80%，否則難以取放'], ['min', minRetain, '孔板要高於層板：板厚 + 公差 + 3']]);
-  if (minRetain > h * 0.8) warnings.push(`罐子太矮（${h}mm），以 ${t}mm 板厚很難固定；建議改用較薄板材`);
+  const minRetainPlate = r2(t + tol + 3);
+  // 顏料名牌夾在層板與孔板之間：孔板要抬高到放得下名牌
+  const minRetainLabel = raw.labelsOn ? r2(t + raw.labelH + tol) : 0;
+  const minRetain = Math.max(minRetainPlate, minRetainLabel);
+  const retainWhy = minRetainLabel > minRetainPlate ? `要放得下 ${raw.labelH}mm 高的顏料名牌` : '孔板要高於層板：板厚 + 公差 + 3';
+  const retainHeight = resolve('retainHeight', clampNum(Math.round(h * 0.35), minRetain, Math.max(minRetain, h * 0.6)),
+    minRetainLabel > clampNum(Math.round(h * 0.35), minRetainPlate, h * 0.6) ? '依顏料名牌高度' : '罐高 × 35%',
+    [['max', r1(h * 0.8), '不超過罐高 80%，否則難以取放'], ['min', minRetain, retainWhy]]);
+  if (minRetainPlate > h * 0.8) warnings.push(`罐子太矮（${h}mm），以 ${t}mm 板厚很難固定；建議改用較薄板材`);
+  else if (minRetain > h * 0.8) warnings.push(`顏料名牌太高：孔板要抬到 ${minRetain}mm，超過罐高 80%，取放會較困難`);
 
-  // 罐頂到上一層底面：取罐時要先把罐子提起「固定孔板高度」才拿得出來
-  const topGap = resolve('topGap', retainHeight + 5, '固定孔板高度 + 5，剛好能提起取出',
-    [['min', r2(retainHeight + 2), `要比固定孔板高度 ${retainHeight}mm 多 2mm，罐子才提得出來`]]);
+  // 罐頂到上一層底面：至少要能把罐子提起「固定孔板高度」再多 8mm，才好拿；只能往上調
+  const liftRoom = 8;
+  const minTopGap = r2(retainHeight + liftRoom);
+  const topGap = resolve('topGap', minTopGap, `最小值：固定孔板高度 + ${liftRoom}，罐子提得起、好拿`,
+    [['min', minTopGap, `至少 ${minTopGap}mm（固定孔板高度 ${retainHeight} + ${liftRoom}），罐子才好拿出來`]]);
 
   const bolt = Number(raw.bolt.slice(1));
   const boltHole = bolt + 0.5;
   const margin = resolve('margin', Math.max(18, Math.round(t * 1.5 + 10), Math.ceil(14 + boltHole * 1.5)), '依板厚與螺栓',
     [['min', Math.max(14, Math.ceil(t + 6), Math.ceil(12 + boltHole)), '要容納延伸卡扣與連接板螺栓']]);
+
+  // 罐子到側板：要讓出貼在側板內側的垂直連接板與卡扣腳（接縫處仍是完整的罐位）
+  const clipLegW = Math.max(6, t);
+  const minSide = Math.ceil(Math.max(t, clipLegW) + 3);
+  const sideClear = resolve('sideClear', Math.max(canGap, minSide), '讓出連接板與卡扣的位置',
+    [['min', minSide, '側板內側要放垂直連接板與卡扣腳']]);
 
   // 深度需同時放得下罐孔與延伸接頭
   const pitch = D + canGap;
@@ -186,8 +204,8 @@ export function resolveParams(input = {}) {
   // 模組大小：自動時限制單一模組約 600mm 以內，並且一定要放得進板材
   const rowPitch = t + h + topGap;
   const usableLong = sheetH - 2 * partGap, usableShort = sheetW - 2 * partGap;
-  const colsFor = (len) => Math.floor((len - 2 * t - canGap) / pitch);
-  const rowsFor = (len) => Math.floor((len - 2 * margin - t) / rowPitch);
+  const colsFor = (len) => Math.floor((len - 2 * t - 2 * sideClear - D) / pitch) + 1;
+  const rowsFor = (len) => Math.floor(len / rowPitch); // 模組側板高 = 列數 × 列距（接縫處是完整罐位）
   const capCols = Math.max(1, colsFor(usableLong));
   const capRows = Math.max(1, rowsFor(usableLong));
   if (colsFor(usableLong) < 1 || rowsFor(usableLong) < 1) warnings.push('板材太小，連單一罐位的模組都放不下');
@@ -203,7 +221,7 @@ export function resolveParams(input = {}) {
 
   const P = {
     thickness: t, tolerance: tol, canDia: D, canHeight: h, kinds: raw.kinds, perKind: raw.perKind,
-    canGap, holeClearance, retainHeight, topGap, frontMargin, margin, maxCols, maxRows,
+    canGap, holeClearance, retainHeight, topGap, sideClear, frontMargin, margin, maxCols, maxRows, labelH: raw.labelH,
     racksX: raw.racksX, racksY: raw.racksY, bolt, lockHoleDia: boltHole, screw,
     keyholeHead, keyholeShank: r1(screw + 0.6), keyholeLen: keyholeHead,
     dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap, gridSnap,
@@ -227,6 +245,7 @@ export function deriveLayout(input) {
   const gap = P.canGap;
   const pitch = P.canDia + gap;
   const holeD = P.canDia + P.holeClearance;
+  const side = P.sideClear; // 最外側罐子到側板內面的距離
 
   const inset = t; // 背板離牆距離（側板後緣貼牆）
   const zs = inset + t; // 層板後緣
@@ -236,9 +255,12 @@ export function deriveLayout(input) {
 
   const rowPitch = t + P.canHeight + P.topGap;
   const e = P.margin;
-  const innerW = cols * pitch + gap;
+  const innerW = 2 * side + P.canDia + (cols - 1) * pitch;
   const W = innerW + 2 * t;
-  const H = e + rows * rowPitch + t + e;
+  const holeX = range(cols).map((c) => t + side + P.canDia / 2 + c * pitch);
+  // 模組側板高度 = 列數 × 列距：最上一列的頭頂空間延伸到上一個模組（或頂蓋）的底層板，
+  // 所以上下接縫處仍是完整的罐位，不留白。
+  const H = rows * rowPitch;
 
   // 層板 → 側板 榫頭
   const plateDepth = depth - zs;
@@ -253,37 +275,51 @@ export function deriveLayout(input) {
 
   const shelfY = range(rows).map((i) => e + i * rowPitch); // 層板底面（模組內）
   const holePlateY = shelfY.map((y) => y + retain); // 孔板底面 = 層板頂 + retain - t
-  const topY = e + rows * rowPitch;
-  const openSpan = rowPitch - t - retain;
-  const backSideTabL = Math.min(40, openSpan * 0.5);
-  const backSideTabY = shelfY.map((y) => y + t + retain + openSpan / 2);
-  const backExt = Math.min(e * 0.5, 8);
-  const backY0 = e - backExt, backY1 = H - e + backExt;
 
   // 延伸接頭
   const nd = Math.min(e * 0.4, 12); // 卡槽深
   const notchW = t + tol;
   const clipZ = [zs + 3 + notchW / 2, depth - 3 - notchW / 2];
-  // 垂直連接板：貼在上下兩模組側板內側，介於前後卡扣之間，每個模組各 2 支螺栓
+  // 接縫上方的空間：最上一列孔板頂面到側板頂緣（連接板下半與卡扣腳都在這裡，貼著側板、在罐子旁邊）
+  const topRoom = rowPitch - e - retain - t;
   const spliceZ = [clipZ[0] + t / 2 + 2, clipZ[1] - t / 2 - 2];
   const spliceMid = (spliceZ[0] + spliceZ[1]) / 2;
-  const spliceHalfH = e - 3;
   const boltR = P.lockHoleDia / 2;
+  const spliceUp = e - 3; // 接縫以上（上一個模組的底部邊距）
+  const spliceDown = Math.max(2 * boltR + 6, Math.min(e - 3, topRoom - 2)); // 接縫以下（避開最上一列孔板）
+  if (topRoom - 2 < 2 * boltR + 6) warnings.push('罐子太矮或孔板太高：接縫下方放不下垂直連接板的螺栓，請加大罐頂到上層距離');
   const boltDz = Math.max(boltR + 2, Math.min((spliceZ[1] - spliceZ[0]) / 2 - boltR - 3, 15));
   const spliceBoltZ = [spliceMid - boltDz, spliceMid + boltDz];
-  const spliceBoltY = e / 2; // 距接縫
-  const clipLeg = Math.max(4, e - nd - 4);
+  const spliceBoltUp = e / 2;
+  const spliceBoltDown = Math.max(boltR + 3, Math.min(e / 2, spliceDown - boltR - 2));
+  const clipLeg = Math.max(3, Math.min(e - nd - 4, topRoom - nd - 2));
   const clipLegW = Math.max(6, t);
+
+  // 背板側邊榫頭與鎖點孔：每列放在孔板上方的空間；最上一列避開接縫處的連接板
+  const spans = shelfY.map((y, r) => {
+    const a = holePlateY[r] + t;
+    const b = r < rows - 1 ? shelfY[r + 1] : H - spliceDown - 2;
+    return [a, Math.max(a + 6, b)];
+  });
+  const minSpan = Math.min(...spans.map(([a, b]) => b - a));
+  const backSideTabL = Math.max(6, Math.min(40, minSpan * 0.5));
+  const backSideTabY = spans.map(([a, b]) => (a + b) / 2);
+  const backExt = Math.min(e * 0.5, 8);
+  const backY0 = e - backExt, backY1 = H - 1;
+
+  // 頂蓋：一片頂板 + 兩片短側板，像沒有罐位的模組一樣疊在最上面（也是頂端名牌的底座）
+  const capH = e + t + e;
 
   const lockZ = (zs + depth) / 2;
   const labelZ = holeZ + holeD / 2 + 2; // 顏料名牌榫槽後緣（罐孔前 2mm）
 
   return {
-    P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD, inset, zs, holeZ, depth,
+    P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD, holeX, side, inset, zs, holeZ, depth,
     retain, rowPitch, e, innerW, W, H, plateDepth, tabL, sideTabs, backTabL, backTabs,
-    shelfY, holePlateY, topY, backSideTabL, backSideTabY, backY0, backY1,
-    mxUnit, myUnit, nd, notchW, clipZ, spliceZ, spliceMid, spliceHalfH, spliceBoltZ, spliceBoltY, clipLeg, clipLegW, lockZ, labelZ,
-    totalW: mx * W, totalH: my * H,
+    shelfY, holePlateY, backSideTabL, backSideTabY, backY0, backY1, capH, topRoom,
+    mxUnit, myUnit, nd, notchW, clipZ, spliceZ, spliceMid, spliceUp, spliceDown, spliceBoltZ, spliceBoltUp, spliceBoltDown,
+    clipLeg, clipLegW, lockZ, labelZ,
+    totalW: mx * W, totalH: my * H + capH,
   };
 }
 
@@ -293,7 +329,7 @@ function rectNotch(c, w, d) {
   return [[c - w / 2, 0], [c - w / 2, d], [c + w / 2, d], [c + w / 2, 0]];
 }
 
-// 側板：2D (u = z 深度, v = y 高度)
+// 側板：2D (u = z 深度, v = y 高度)。上緣 = 最上一列罐子的頭頂空間中段，接上方模組或頂蓋
 function sidePanelShape(L) {
   const { t, tol, depth: D, H } = L;
   const notches = [
@@ -305,8 +341,7 @@ function sidePanelShape(L) {
   const outer = [[0, 0], ...bottom, [D, 0], [D, H], ...top, [0, H]];
 
   const holes = [];
-  const plateYs = [...L.shelfY, ...L.holePlateY, L.topY];
-  for (const y0 of plateYs) {
+  for (const y0 of [...L.shelfY, ...L.holePlateY]) {
     for (const zc of L.sideTabs) {
       holes.push({ type: 'poly', pts: rectCW(zc - L.tabL / 2 - tol / 2, y0 - tol / 2, zc + L.tabL / 2 + tol / 2, y0 + t + tol / 2) });
     }
@@ -315,10 +350,20 @@ function sidePanelShape(L) {
     holes.push({ type: 'poly', pts: rectCW(L.inset - tol / 2, yc - L.backSideTabL / 2 - tol / 2, L.inset + t + tol / 2, yc + L.backSideTabL / 2 + tol / 2) });
     holes.push({ type: 'circle', c: [L.lockZ, yc], r: L.P.lockHoleDia / 2 });
   }
-  // 上下邊距的垂直連接板螺栓孔（每片側板都切，方便日後往上延伸）
+  // 垂直連接板螺栓孔：底部邊距一組、上緣下方一組（每片側板都切，方便日後往上延伸）
   for (const z of L.spliceBoltZ) {
-    for (const y of [L.spliceBoltY, H - L.spliceBoltY]) holes.push({ type: 'circle', c: [z, y], r: L.P.lockHoleDia / 2 });
+    for (const y of [L.spliceBoltUp, H - L.spliceBoltDown]) holes.push({ type: 'circle', c: [z, y], r: L.P.lockHoleDia / 2 });
   }
+  return { outer, holes };
+}
+
+// 頂蓋側板：只有底部的卡扣槽與連接板螺栓孔，頂板在底部邊距之上
+function capSidePanelShape(L) {
+  const { t, tol, depth: D, capH, e } = L;
+  const notches = [...rectNotch(L.clipZ[0], L.notchW, L.nd), ...rectNotch(L.clipZ[1], L.notchW, L.nd)];
+  const outer = [[0, 0], ...notches, [D, 0], [D, capH], [0, capH]];
+  const holes = L.sideTabs.map((zc) => ({ type: 'poly', pts: rectCW(zc - L.tabL / 2 - tol / 2, e - tol / 2, zc + L.tabL / 2 + tol / 2, e + t + tol / 2) }));
+  for (const z of L.spliceBoltZ) holes.push({ type: 'circle', c: [z, L.spliceBoltUp], r: L.P.lockHoleDia / 2 });
   return { outer, holes };
 }
 
@@ -352,7 +397,7 @@ function backPanelBase(L) {
     pts.push([t, yc + h], [0, yc + h], [0, yc - h], [t, yc - h]);
   }
   const slots = [];
-  for (const y0 of [...L.shelfY, L.topY]) {
+  for (const y0 of L.shelfY) {
     for (const xc of L.backTabs) {
       slots.push(rectCW(xc - L.backTabL / 2 - tol / 2, y0 - tol / 2, xc + L.backTabL / 2 + tol / 2, y0 + t + tol / 2));
     }
@@ -371,14 +416,14 @@ function clipShape(L) {
   };
 }
 
-// 垂直連接板：2D (u = z 深度, v = y，以接縫為 0)
+// 垂直連接板：2D (u = z 深度, v = y，以接縫為 0)。接縫以上貼上方側板的底部邊距，以下貼本模組最上一列旁邊
 function spliceShape(L) {
-  const [z0, z1] = L.spliceZ, h = L.spliceHalfH;
+  const [z0, z1] = L.spliceZ;
   const holes = [];
   for (const z of L.spliceBoltZ) {
-    for (const y of [-L.spliceBoltY, L.spliceBoltY]) holes.push({ type: 'circle', c: [z, y], r: L.P.lockHoleDia / 2 });
+    for (const y of [-L.spliceBoltDown, L.spliceBoltUp]) holes.push({ type: 'circle', c: [z, y], r: L.P.lockHoleDia / 2 });
   }
-  return { outer: [[z0, -h], [z1, -h], [z1, h], [z0, h]], holes };
+  return { outer: [[z0, -L.spliceDown], [z1, -L.spliceDown], [z1, L.spliceUp], [z0, L.spliceUp]], holes };
 }
 
 // --- 展示名牌 -------------------------------------------------------------
@@ -407,7 +452,7 @@ const arcPts = (cx, cy, rx, ry, a0, a1, n) => Array.from({ length: n + 1 }, (_, 
  * 2D (u = x, v = y)；v = 0 為插入面，榫頭往下 t。輪廓 = 底邊（含榫頭）+ 依造型產生的上緣。
  * art 為 artwork.js 的正規化圖案（寬 1、高 aspect）。
  */
-function signPlate({ x0, x1, top, t, tabs, tabL, shape = 'rect', art, mode, margin, minFeature, bandH = 0 }) {
+function signPlate({ x0, x1, top, t, tabs, tabL, shape = 'rect', art, mode, margin, minFeature, bandH = 0, topTabUp = 0 }) {
   const W = x1 - x0;
   let ax0 = x0 + margin, ax1 = x1 - margin, ay0 = margin, ay1 = top - margin;
   let upper; // 從右上 (x1, …) 沿上緣走到左上 (x0, …)
@@ -433,6 +478,11 @@ function signPlate({ x0, x1, top, t, tabs, tabL, shape = 'rect', art, mode, marg
       return [x, top - amp / 2 + (amp / 2) * Math.cos((2 * Math.PI * n * (x - x0)) / W)];
     });
     ay1 = top - amp - margin;
+  } else if (topTabUp > 0) {
+    // 上緣也有榫頭（顏料名牌往上插進孔板）
+    upper = [[x1, top]];
+    for (const xc of [...tabs].reverse()) upper.push([xc + tabL / 2, top], [xc + tabL / 2, top + topTabUp], [xc - tabL / 2, top + topTabUp], [xc - tabL / 2, top]);
+    upper.push([x0, top]);
   } else {
     upper = [[x1, top], [x0, top]];
   }
@@ -541,26 +591,37 @@ function chaikin(pts, fixed) {
 }
 
 /**
- * 名牌的寬度與左右位移：一律限制在兩片側板之間。
- * width 空白 = 滿寬；offset 為相對模組中心的位移（正 = 往右）。回傳實際採用的值與可移動範圍。
+ * 名牌的寬度與位置：一律限制在兩片側板之間。
+ * width 空白 = 滿寬；align = 'left' | 'center' | 'right'，offset 為離該基準的距離
+ * （靠左：離左側板；置中：離中心，正 = 往右；靠右：離右側板）。拉寬窄時對齊的那一側不動。
  */
-export function signSpan(L, { width, offset } = {}, inset = 0, minWidth = 40) {
+export function signSpan(L, { width, align = 'center', offset } = {}, inset = 0, minWidth = 40) {
   const aMin = L.t + L.tol / 2 + inset, aMax = L.W - L.t - L.tol / 2 - inset;
   const full = aMax - aMin;
   const wantW = Number(width);
   const w = width == null || width === '' || !(wantW > 0) ? full : Math.min(full, Math.max(Math.min(minWidth, full), wantW));
-  const maxOffset = (full - w) / 2;
+  const room = full - w;
   const wantOff = Number(offset) || 0;
-  const off = Math.min(maxOffset, Math.max(-maxOffset, wantOff));
-  const c = (aMin + aMax) / 2 + off;
+  let x0, off, minOffset, maxOffset;
+  if (align === 'left' || align === 'right') {
+    minOffset = 0; maxOffset = room;
+    off = Math.min(room, Math.max(0, wantOff));
+    x0 = align === 'left' ? aMin + off : aMax - w - off;
+  } else {
+    align = 'center';
+    minOffset = -room / 2; maxOffset = room / 2;
+    off = Math.min(maxOffset, Math.max(minOffset, wantOff));
+    x0 = (aMin + aMax) / 2 + off - w / 2;
+  }
   return {
-    x0: c - w / 2, x1: c + w / 2, width: r2(w), offset: r2(off), maxOffset: r2(maxOffset), full: r2(full),
+    x0, x1: x0 + w, width: r2(w), align, offset: r2(off), minOffset: r2(minOffset), maxOffset: r2(maxOffset), full: r2(full),
+    aMin, aMax,
     widthClamped: width != null && width !== '' && Math.abs(w - wantW) > 1e-6,
     offsetClamped: Math.abs(off - wantOff) > 1e-6,
   };
 }
 
-/** 頂端名牌：立在頂板上、位於深度中間，兩支榫頭穿過頂板（榫槽跟著名牌位置走） */
+/** 頂端名牌：立在頂蓋的頂板上、位於深度中間，兩支榫頭穿過頂板（榫槽跟著名牌位置走） */
 function nameplateShape(L, opts) {
   const { t, e } = L;
   const height = Math.min(300, Math.max(20, Number(opts.height) || 60));
@@ -576,17 +637,21 @@ function nameplateShape(L, opts) {
   return { ...s, tabs, tabL, height, span };
 }
 
-/** 每種顏料的名牌：立在固定孔板前緣、罐子前方，兩支榫頭插進孔板（每片可各自左右移） */
-function labelShape(L, opts, art, offset) {
-  const { t } = L;
-  const height = Math.min(60, Math.max(8, Number(opts.height) || 18));
-  const span = signSpan(L, { width: opts.width, offset }, 1, 30);
+/**
+ * 顏料名牌：夾在層板與固定孔板之間、罐子前方。
+ * 下緣榫頭插進層板、上緣榫頭插進孔板，高度 = 兩板之間的空隙（不會凸出孔板卡到手）。
+ */
+function labelShape(L, opts, art) {
+  const { t, tol } = L;
+  const gap = L.retain - t; // 層板頂面到孔板底面
+  const height = Math.max(4, gap - tol);
+  const span = signSpan(L, opts, 1, 30);
   const w = span.x1 - span.x0;
   const tabL = Math.min(20, w / 6);
   const tabs = [0.2, 0.8].map((f) => span.x0 + w * f);
   const s = signPlate({
-    x0: span.x0, x1: span.x1, top: height, t, tabs, tabL,
-    shape: 'round', art, mode: opts.mode, margin: Math.max(1.5, L.P.bitDia * 0.75), minFeature: Math.max(1, L.P.bitDia),
+    x0: span.x0, x1: span.x1, top: height, t, tabs, tabL, topTabUp: t + tol,
+    shape: 'rect', art, mode: opts.mode, margin: Math.max(1, Math.min(1.5, height * 0.12)), minFeature: Math.max(1, L.P.bitDia),
   });
   return { ...s, tabs, tabL, height, span };
 }
@@ -620,7 +685,7 @@ export function autoMounts(L) {
   const out = [];
   const R = L.P.keyholeHead / 2;
   const rs = Math.min(L.P.keyholeShank / 2, R * 0.95);
-  const vLocal = L.topY - L.tol / 2 - rs - 6;
+  const vLocal = L.backY1 - rs - 4; // 背板上緣下方
   for (let j = 0; j < L.my; j++) {
     for (let i = 0; i < L.mx; i++) {
       for (const f of [0.25, 0.75]) {
@@ -649,14 +714,11 @@ export function buildRack(input, mounts = [], options = {}) {
   const t = L.t;
 
   const side = finish(sidePanelShape(L));
-  const holeCircles = range(L.cols).map((c) => ({
-    type: 'circle', c: [t + L.gap / 2 + L.pitch / 2 + c * L.pitch, L.holeZ], r: L.holeD / 2,
-  }));
-  const shelf = finish(plateShape(L, true, []));
-  const holePlate = finish(plateShape(L, false, holeCircles));
+  const capSide = finish(capSidePanelShape(L));
+  const holeCircles = L.holeX.map((x) => ({ type: 'circle', c: [x, L.holeZ], r: L.holeD / 2 }));
   const np = options.nameplate?.enabled ? nameplateShape(L, options.nameplate) : null;
 
-  // 每種顏料的名牌（各自開關）；有名牌的那一列換成開了榫槽的孔板
+  // 每種顏料的名牌（各自開關，大小與位置全部連動）：夾在層板與孔板之間，兩片板都開榫槽
   const lab = options.labels?.enabled ? options.labels : null;
   const labelOn = (kind) => !!lab && kind < L.K && lab.items?.[kind]?.on !== false;
   const labelShapes = new Map();
@@ -664,30 +726,27 @@ export function buildRack(input, mounts = [], options = {}) {
     for (let k = 0; k < L.K; k++) {
       if (!labelOn(k)) continue;
       const item = lab.items?.[k];
-      labelShapes.set(k, labelShape(L, lab, item?.art?.loops?.length ? item.art : null, item?.offset));
+      labelShapes.set(k, labelShape(L, lab, item?.art?.loops?.length ? item.art : null));
     }
   }
-  // 孔板榫槽跟著每片名牌的位置；位置相同的共用同一款孔板
-  const labeledPlates = new Map();
-  const holePlateFor = (ls) => {
-    const key = ls.tabs.map((x) => x.toFixed(3)).join(',') + `|${ls.tabL.toFixed(3)}`;
-    if (!labeledPlates.has(key)) {
-      const slots = ls.tabs.map((xc) => ({
-        type: 'poly', pts: rectCW(xc - ls.tabL / 2 - L.tol / 2, L.labelZ, xc + ls.tabL / 2 + L.tol / 2, L.labelZ + t + L.tol),
-      }));
-      labeledPlates.set(key, finish(plateShape(L, false, [...holeCircles, ...slots])));
-    }
-    return labeledPlates.get(key);
-  };
+  const anyLabel = labelShapes.values().next().value;
+  const labelSlots = anyLabel ? anyLabel.tabs.map((xc) => ({
+    type: 'poly', pts: rectCW(xc - anyLabel.tabL / 2 - L.tol / 2, L.labelZ, xc + anyLabel.tabL / 2 + L.tol / 2, L.labelZ + t + L.tol),
+  })) : [];
+  const shelf = finish(plateShape(L, true, []));
+  const holePlate = finish(plateShape(L, false, holeCircles));
+  const shelfLabeled = anyLabel ? finish(plateShape(L, true, labelSlots)) : null;
+  const holePlateLabeled = anyLabel ? finish(plateShape(L, false, [...holeCircles, ...labelSlots])) : null;
+
   const signs = [np, ...labelShapes.values()].filter(Boolean);
   const islands = signs.reduce((n, s) => n + s.islands, 0), tiny = signs.reduce((n, s) => n + s.tiny, 0);
   if (islands) warnings.push(`名牌鏤空：${islands} 個封閉內島（例如「口」「O」的中間）會掉出，已略過`);
   if (tiny) warnings.push(`名牌鏤空：${tiny} 個細節小於銑刀直徑 ${Math.max(1, P.bitDia)}mm，已略過`);
-  const nz = L.spliceMid - t / 2; // 名牌位於深度中間（前後卡扣之間）
+  const nz = L.spliceMid - t / 2; // 頂端名牌位於深度中間（前後卡扣之間）
   const npSlots = np ? np.tabs.map((xc) => ({
     type: 'poly', pts: rectCW(xc - np.tabL / 2 - L.tol / 2, nz - L.tol / 2, xc + np.tabL / 2 + L.tol / 2, nz + t + L.tol / 2),
   })) : [];
-  const top = finish(plateShape(L, true, npSlots));
+  const capPlate = finish(plateShape(L, false, npSlots));
   const nameplate = np ? { outer: dogbone(np.outer, r), holes: np.holes } : null;
   const backBase = backPanelBase(L);
   const clipRaw = clipShape(L);
@@ -701,6 +760,7 @@ export function buildRack(input, mounts = [], options = {}) {
   let seq = 0;
   const add = (name, kind, shape, mod, origin, U, V, explode) => {
     parts.push({ id: `p${seq++}`, name, kind, module: mod, outer: shape.outer, holes: shape.holes, t, origin, U, V, explode });
+    return parts[parts.length - 1];
   };
 
   for (let j = 0; j < L.my; j++) {
@@ -719,47 +779,48 @@ export function buildRack(input, mounts = [], options = {}) {
 
       for (let rI = 0; rI < L.rows; rI++) {
         const kind = (j % L.myUnit) * L.rows + rI;
-        const labeled = labelShapes.has(kind);
-        add(`${tag} 層板${rI + 1}`, 'shelf', shelf, [i, j], [x0, y0 + L.shelfY[rI] + t, 0], X, Z, [0, -0.3, 1]);
-        add(`${tag} 孔板${rI + 1}`, 'holeplate', labeled ? holePlateFor(labelShapes.get(kind)) : holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
-        if (labeled) {
-          const ls = labelShapes.get(kind);
-          add(`${tag} 第${kind + 1}種 名牌`, 'label', { outer: dogbone(ls.outer, r), holes: ls.holes }, [i, j],
-            [x0, y0 + L.holePlateY[rI] + t, L.labelZ + L.tol / 2], X, Y, [0, 0.6, 2]);
-          const p = parts[parts.length - 1];
+        const ls = labelShapes.get(kind);
+        add(`${tag} 層板${rI + 1}`, 'shelf', ls ? shelfLabeled : shelf, [i, j], [x0, y0 + L.shelfY[rI] + t, 0], X, Z, [0, -0.3, 1]);
+        add(`${tag} 孔板${rI + 1}`, 'holeplate', ls ? holePlateLabeled : holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
+        if (ls) {
+          const p = add(`${tag} 第${kind + 1}種 名牌`, 'label', { outer: dogbone(ls.outer, r), holes: ls.holes }, [i, j],
+            [x0, y0 + L.shelfY[rI] + t, L.labelZ + L.tol / 2], X, Y, [0, 0, 2]);
           Object.assign(p, { engrave: ls.engrave, raster: ls.raster, artRect: ls.artRect, artMode: lab.mode, artKey: `label:${kind}`, labelKind: kind, span: ls.span });
         }
-      }
-      add(`${tag} 頂板`, 'top', top, [i, j], [x0, y0 + L.topY + t, 0], X, Z, [0, 1, 0.5]);
-      if (nameplate && j === L.my - 1) {
-        add(`${tag} 展示名牌`, 'nameplate', nameplate, [i, j], [x0, y0 + L.topY + t, nz], X, Y, [0, 1.6, 0.4]);
-        const p = parts[parts.length - 1];
-        p.engrave = np.engrave;
-        p.raster = np.raster;
-        p.artRect = np.artRect;
-        p.artMode = options.nameplate.mode;
-        p.artKey = 'top';
-        p.span = np.span;
       }
     }
   }
 
-  // 水平延伸卡扣（相鄰模組側板上下緣）
-  for (let j = 0; j < L.my; j++) {
+  // 頂蓋：每一欄最上面一組（頂板 + 兩片短側板），也是頂端名牌的底座
+  const capY0 = L.my * L.H;
+  for (let i = 0; i < L.mx; i++) {
+    const x0 = i * L.W, tag = `頂蓋${i + 1}`, mod = [i, L.my];
+    add(`${tag} 左側板`, 'capside', capSide, mod, [x0 + t, capY0, 0], Z, Y, [-1, 0.6, 0]);
+    add(`${tag} 右側板`, 'capside', capSide, mod, [x0 + L.W, capY0, 0], Z, Y, [1, 0.6, 0]);
+    add(`${tag} 頂板`, 'top', capPlate, mod, [x0, capY0 + L.e + t, 0], X, Z, [0, 1, 0.5]);
+    if (nameplate) {
+      const p = add(`${tag} 展示名牌`, 'nameplate', nameplate, mod, [x0, capY0 + L.e + t, nz], X, Y, [0, 1.6, 0.4]);
+      Object.assign(p, { engrave: np.engrave, raster: np.raster, artRect: np.artRect, artMode: options.nameplate.mode, artKey: 'top', span: np.span });
+    }
+  }
+
+  // 水平延伸卡扣（相鄰模組側板上下緣；頂蓋只有下緣）
+  for (let j = 0; j <= L.my; j++) {
     for (let i = 0; i < L.mx - 1; i++) {
       const xj = (i + 1) * L.W, y0 = j * L.H;
       L.clipZ.forEach((zc, k) => {
-        add(`卡扣 H${i + 1}|${i + 2}-${j + 1} 上${k + 1}`, 'clip', clip, [i, j], [xj - clipRaw.cw / 2, y0 + L.H - clipRaw.hc, zc - t / 2], X, Y, [0, 1.2, 0]);
-        add(`卡扣 H${i + 1}|${i + 2}-${j + 1} 下${k + 1}`, 'clip', clip, [i, j], [xj - clipRaw.cw / 2, y0 + clipRaw.hc, zc + t / 2], X, NY, [0, -1.2, 0]);
+        if (j < L.my) add(`卡扣 H${i + 1}|${i + 2}-${j + 1} 上${k + 1}`, 'clip', clip, [i, j], [xj - clipRaw.cw / 2, y0 + L.H - clipRaw.hc, zc - t / 2], X, Y, [0, 1.2, 0]);
+        add(`卡扣 H${i + 1}|${i + 2}-${j < L.my ? j + 1 : '頂蓋'} 下${k + 1}`, 'clip', clip, [i, j], [xj - clipRaw.cw / 2, y0 + clipRaw.hc, zc + t / 2], X, NY, [0, -1.2, 0]);
       });
     }
   }
-  // 垂直連接板（貼在上下模組側板內側，螺栓鎖緊）
-  for (let j = 0; j < L.my - 1; j++) {
+  // 垂直連接板：每條上下接縫（含最上層與頂蓋之間），貼在側板內側、罐子旁邊，螺栓鎖緊
+  for (let j = 0; j < L.my; j++) {
     for (let i = 0; i < L.mx; i++) {
       const x0 = i * L.W, yj = (j + 1) * L.H;
-      add(`連接板 V${i + 1}-${j + 1}|${j + 2} 左`, 'splice', splice, [i, j], [x0 + 2 * t, yj, 0], Z, Y, [0.8, 0, 1]);
-      add(`連接板 V${i + 1}-${j + 1}|${j + 2} 右`, 'splice', splice, [i, j], [x0 + L.W - t, yj, 0], Z, Y, [-0.8, 0, 1]);
+      const upper = j + 1 < L.my ? j + 2 : '頂蓋';
+      add(`連接板 V${i + 1}-${j + 1}|${upper} 左`, 'splice', splice, [i, j], [x0 + 2 * t, yj, 0], Z, Y, [0.8, 0, 1]);
+      add(`連接板 V${i + 1}-${j + 1}|${upper} 右`, 'splice', splice, [i, j], [x0 + L.W - t, yj, 0], Z, Y, [-0.8, 0, 1]);
     }
   }
 
@@ -775,7 +836,7 @@ export function buildRack(input, mounts = [], options = {}) {
           if (n >= L.N) continue;
           cans.push({
             kind, module: [i, j],
-            x: i * L.W + t + L.gap / 2 + L.pitch / 2 + c * L.pitch,
+            x: i * L.W + L.holeX[c],
             y: j * L.H + L.shelfY[rI] + t,
             z: L.holeZ, r: P.canDia / 2, h: P.canHeight,
           });
@@ -789,11 +850,11 @@ export function buildRack(input, mounts = [], options = {}) {
   const counts = {};
   for (const p of parts) counts[p.kind] = (counts[p.kind] || 0) + 1;
   const capacity = L.mx * L.cols * L.my * L.rows;
-  const hJoints = (L.mx - 1) * L.my, vJoints = L.mx * (L.my - 1);
+  const hJoints = (L.mx - 1) * L.my, vJoints = L.mx * L.my;
   const boltLen = (n) => Math.ceil((n * t + P.bolt * 1.5 + 4) / 5) * 5;
   const hardware = [
     { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '水平鎖點（穿過相鄰兩片側板）', qty: hJoints * L.rows },
-    { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '垂直連接板（側板 + 連接板）', qty: vJoints * 2 * 4 },
+    { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '垂直連接板（側板 + 連接板，含頂蓋）', qty: vJoints * 2 * 4 },
     { name: `M${P.bolt} 螺帽 + 墊片`, use: '每支螺栓一組', qty: hJoints * L.rows + vJoints * 8 },
     { name: `${P.screw}mm 木螺絲`, use: '牆面掛點（螺絲頭需凸出牆面約 2 個板厚）', qty: mountInfo.filter((m) => m.valid).length },
   ].filter((h) => h.qty > 0);
@@ -807,8 +868,9 @@ export function buildRack(input, mounts = [], options = {}) {
       racksX: P.racksX, racksY: P.racksY, hJoints, vJoints, hardware,
       nameplateH: np ? np.height : 0,
       labelCount: parts.filter((p) => p.kind === 'label').length,
+      labelH: anyLabel ? r2(anyLabel.height) : 0,
       nameplateSpan: np ? np.span : null,
-      labelSpans: Object.fromEntries([...labelShapes].map(([k, s]) => [k, s.span])),
+      labelSpan: anyLabel ? anyLabel.span : null,
     },
   };
 }

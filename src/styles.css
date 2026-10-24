@@ -264,6 +264,35 @@ details.group[open] summary::before { transform: rotate(90deg); }
 .dim-label.sign-tag { background: #3a6fd8; color: #fff; }
 
 @media (max-width: 640px) {
-  #toolbar { bottom: calc(52vh + 16px + env(safe-area-inset-bottom, 0px)); }
+  body:not(.sidebar-closed) #toolbar { bottom: calc(52vh + 16px + env(safe-area-inset-bottom, 0px)); }
   #hint { max-width: calc(100vw - 32px); font-size: 11px; }
+}
+
+/* 選取面板：選到名牌或掛點時出現，用按鈕與數字精確調整（手機好按） */
+#inspector { position: fixed; z-index: 5; left: 50%; transform: translateX(-50%); bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+  width: min(360px, calc(100vw - 32px)); padding: 10px 12px; border-radius: 14px; display: grid; gap: 6px;
+  background: var(--panel); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18); }
+#inspector[hidden] { display: none; }
+.insp-head { display: flex; align-items: center; gap: 8px; }
+.insp-head span { color: var(--muted); font-size: 12px; }
+.insp-head button { margin-left: auto; }
+.insp-align { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; background: var(--field); border-radius: 10px; padding: 2px; }
+.insp-align button { background: transparent; padding: 7px 0; }
+.insp-align button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+.insp-row { display: grid; grid-template-columns: 1fr 36px 72px 36px 24px auto; align-items: center; gap: 4px; }
+.insp-row > span { font-size: 12px; color: var(--muted); }
+.insp-row button[data-nudge] { padding: 6px 0; font-size: 16px; line-height: 1; }
+.insp-row input { width: 100%; border: none; border-radius: 8px; background: var(--field); color: inherit; font: inherit; padding: 6px; text-align: center; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+.insp-row input::-webkit-inner-spin-button { display: none; }
+.insp-row em { font-style: normal; color: var(--muted); font-size: 11px; }
+.insp-row small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+#inspector .hint { margin: 0; }
+@media (pointer: coarse) {
+  .insp-row { grid-template-columns: 1fr 44px 76px 44px 24px auto; }
+  .insp-row button[data-nudge] { padding: 10px 0; }
+  .insp-align button { padding: 10px 0; }
+}
+@media (max-width: 640px) {
+  body:not(.sidebar-closed) #inspector { bottom: calc(52vh + 70px + env(safe-area-inset-bottom, 0px)); }
+  #inspector { bottom: calc(118px + env(safe-area-inset-bottom, 0px)); }
 }

@@ -42,15 +42,32 @@ test('顏料名牌開啟時前緣留邊自動加寬，榫槽前後都留得住�
   assert.match(tight.fields.frontMargin.note, /顏料名牌/);
 });
 
-test('名牌立在罐子前方、孔板上方，不擋取罐', () => {
+test('顏料名牌夾在層板與孔板之間、罐子前方，不凸出孔板', () => {
   const r = buildRack({ ...DEFAULTS, labelsOn: true }, [], { labels: labels([{ on: true, art }]) });
   const L = r.layout;
   const p = r.parts.find((q) => q.kind === 'label');
   const can = r.cans.find((c) => c.kind === 0);
   assert.ok(p.origin[2] > can.z + can.r, '在罐子前面');
-  const holePlateTop = L.holePlateY[0] + L.t;
-  assert.ok(Math.abs(p.origin[1] - holePlateTop) < 1e-9, '站在孔板頂面');
-  assert.ok(holePlateTop + 18 < L.shelfY[0] + L.rowPitch, '低於上一層');
+  const shelfTop = L.shelfY[0] + L.t, plateBottom = L.holePlateY[0], plateTop = plateBottom + L.t;
+  assert.ok(Math.abs(p.origin[1] - shelfTop) < 1e-9, '站在層板頂面');
+  const b = bbox(p.outer);
+  assert.ok(Math.abs(b.minY + L.t) < 1e-6, '下榫頭穿過層板');
+  assert.ok(p.origin[1] + b.maxY <= plateTop + 1e-6, '上榫頭頂多與孔板頂面齊平，不凸出');
+  assert.ok(Math.abs(p.origin[1] + b.maxY - plateTop) < 1e-6);
+  // 層板與孔板都開了對應的榫槽
+  const shelf = r.parts.find((q) => q.kind === 'shelf' && Math.abs(q.origin[1] - shelfTop) < 1e-9);
+  const plate = r.parts.find((q) => q.kind === 'holeplate' && Math.abs(q.origin[1] - plateTop) < 1e-9);
+  assert.equal(shelf.holes.filter((h) => h.type === 'poly').length, 2);
+  assert.equal(plate.holes.filter((h) => h.type === 'poly').length, 2);
+});
+
+test('顏料名牌高度連動孔板高度與罐頂距離', () => {
+  const a = resolveParams({ ...DEFAULTS, labelsOn: true, labelH: 12 });
+  const b = resolveParams({ ...DEFAULTS, labelsOn: true, labelH: 25 });
+  assert.ok(b.P.retainHeight >= DEFAULTS.thickness + 25, '孔板抬高');
+  assert.ok(b.P.topGap > a.P.topGap, '罐頂距離跟著加大');
+  const r = buildRack({ ...DEFAULTS, labelsOn: true, labelH: 25 }, [], { labels: labels([{ on: true, art }]) });
+  assert.ok(r.info.labelH >= 25 - 1e-6);
 });
 
 test('雷射名牌：每片各自內嵌自己的點陣', () => {
@@ -114,17 +131,30 @@ test('頂端名牌左右移：頂板榫槽跟著名牌榫頭移動', () => {
   assert.equal(b.info.nameplateSpan.offset, 50);
 });
 
-test('顏料名牌各自左右移，孔板榫槽各自對應', () => {
-  const items = [{ on: true, art, offset: -40 }, { on: true, art, offset: 40 }];
-  const r = buildRack({ ...DEFAULTS, kinds: 2, labelsOn: true }, [], { labels: { enabled: true, mode: 'engrave', height: 18, width: 150, items } });
-  const [l0, l1] = [0, 1].map((k) => r.parts.find((p) => p.kind === 'label' && p.labelKind === k));
-  assert.ok(Math.abs(bbox(l1.outer).minX - bbox(l0.outer).minX - 80) < 1e-6);
-  // 每列孔板的榫槽中心 = 該列名牌的榫頭中心
-  for (const lab of [l0, l1]) {
-    const row = lab.name.match(/M(\d+)-(\d+)/)[0];
-    const plate = r.parts.find((p) => p.kind === 'holeplate' && p.name.startsWith(row) && Math.abs(p.origin[1] - lab.origin[1]) < 1e-6);
+test('顏料名牌全部連動：同寬、同對齊、同位移，榫槽一致', () => {
+  const items = [{ on: true, art }, { on: true, art }];
+  const r = buildRack({ ...DEFAULTS, kinds: 2, labelsOn: true }, [], { labels: { enabled: true, mode: 'engrave', width: 150, align: 'left', offset: 20, items } });
+  const ls = r.parts.filter((p) => p.kind === 'label');
+  assert.equal(ls.length, 2);
+  const x0 = ls.map((p) => bbox(p.outer).minX);
+  assert.ok(Math.abs(x0[0] - x0[1]) < 1e-6, '每片位置相同');
+  assert.ok(Math.abs(ls[0].span.x0 - (ls[0].span.aMin + 20)) < 1e-6, '離左側板 20mm');
+  for (const lab of ls) {
+    const plate = r.parts.find((p) => p.kind === 'holeplate' && p.module.join() === lab.module.join() && p.holes.some((h) => h.type === 'poly'));
     const slots = plate.holes.filter((h) => h.type === 'poly').map((h) => { const b = bbox(h.pts); return (b.minX + b.maxX) / 2; });
     const tabs = [0.2, 0.8].map((f) => lab.span.x0 + lab.span.width * f);
     slots.forEach((x, i) => assert.ok(Math.abs(x - tabs[i]) < 1e-6));
   }
 });
+
+test('對齊方式：拉寬窄時對齊的那一側不動', () => {
+  const L = deriveLayout(DEFAULTS);
+  const l1 = signSpan(L, { width: 150, align: 'left', offset: 10 }), l2 = signSpan(L, { width: 250, align: 'left', offset: 10 });
+  assert.ok(Math.abs(l1.x0 - l2.x0) < 1e-9);
+  const r1 = signSpan(L, { width: 150, align: 'right', offset: 10 }), r2 = signSpan(L, { width: 250, align: 'right', offset: 10 });
+  assert.ok(Math.abs(r1.x1 - r2.x1) < 1e-9);
+  const c1 = signSpan(L, { width: 150, align: 'center' }), c2 = signSpan(L, { width: 250, align: 'center' });
+  assert.ok(Math.abs((c1.x0 + c1.x1) - (c2.x0 + c2.x1)) < 1e-9);
+  assert.equal(signSpan(L, { width: 150, align: 'left', offset: -5 }).offset, 0, '靠左不能是負值');
+});
+
