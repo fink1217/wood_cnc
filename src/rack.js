@@ -101,8 +101,7 @@ export function normalizeParams(input = {}) {
     const v = String(input[spec.key] ?? '');
     if (spec.options.some(([o]) => o === v)) P[spec.key] = v;
   }
-  P.labelsOn = input.labelsOn === true; // 有任何顏料名牌開啟（影響前緣留邊與孔板高度）
-  P.labelH = clampNum(Number(input.labelH) || 12, 6, 60); // 顏料名牌高度 = 層板與孔板之間的空隙
+  P.labelsOn = input.labelsOn === true; // 有任何顏料名牌開啟（影響前緣留邊）
   for (const spec of [...LINKED_BASIC_SPEC, ...ADVANCED_SPEC]) {
     const v = input[spec.key];
     const n = Number(v);
@@ -158,16 +157,10 @@ export function resolveParams(input = {}) {
   const canGap = resolve('canGap', Math.max(6, Math.ceil(holeClearance + 4), Math.ceil(t * 0.6)), '依餘隙與板厚',
     [['min', holeClearance + 2, '罐孔之間至少要留 2mm 木料']]);
 
-  const minRetainPlate = r2(t + tol + 3);
-  // 顏料名牌夾在層板與孔板之間：孔板要抬高到放得下名牌
-  const minRetainLabel = raw.labelsOn ? r2(t + raw.labelH + tol) : 0;
-  const minRetain = Math.max(minRetainPlate, minRetainLabel);
-  const retainWhy = minRetainLabel > minRetainPlate ? `要放得下 ${raw.labelH}mm 高的顏料名牌` : '孔板要高於層板：板厚 + 公差 + 3';
-  const retainHeight = resolve('retainHeight', clampNum(Math.round(h * 0.35), minRetain, Math.max(minRetain, h * 0.6)),
-    minRetainLabel > clampNum(Math.round(h * 0.35), minRetainPlate, h * 0.6) ? '依顏料名牌高度' : '罐高 × 35%',
-    [['max', r1(h * 0.8), '不超過罐高 80%，否則難以取放'], ['min', minRetain, retainWhy]]);
-  if (minRetainPlate > h * 0.8) warnings.push(`罐子太矮（${h}mm），以 ${t}mm 板厚很難固定；建議改用較薄板材`);
-  else if (minRetain > h * 0.8) warnings.push(`顏料名牌太高：孔板要抬到 ${minRetain}mm，超過罐高 80%，取放會較困難`);
+  const minRetain = r2(t + tol + 3);
+  const retainHeight = resolve('retainHeight', clampNum(Math.round(h * 0.35), minRetain, h * 0.6), '罐高 × 35%',
+    [['max', r1(h * 0.8), '不超過罐高 80%，否則難以取放'], ['min', minRetain, '孔板要高於層板：板厚 + 公差 + 3']]);
+  if (minRetain > h * 0.8) warnings.push(`罐子太矮（${h}mm），以 ${t}mm 板厚很難固定；建議改用較薄板材`);
 
   // 罐頂到上一層底面：至少要能把罐子提起「固定孔板高度」再多 8mm，才好拿；只能往上調
   const liftRoom = 8;
@@ -192,11 +185,11 @@ export function resolveParams(input = {}) {
   // 連接板位於前後兩個卡扣之間，至少要放得下兩排螺栓孔
   const needDepth = Math.max(60, Math.ceil(2 * t + 10 + slotW + t + 4 * boltHole + 8));
   const minFrontJoint = Math.max(0, Math.ceil(needDepth - baseDepth));
-  // 顏料名牌：孔板前緣要放得下名牌榫槽（罐孔前留 2mm、榫槽、前緣再留 5mm）
+  // 顏料名牌：從正面插進層板前緣的開口槽，名牌整片要收在層板前緣之內（罐子前方 2mm 起）
   const holeD = D + holeClearance;
-  const minFrontLabel = raw.labelsOn ? Math.ceil(holeD / 2 - pitch / 2 + 2 + slotW + 5) : 0;
+  const minFrontLabel = raw.labelsOn ? Math.ceil(holeD / 2 - pitch / 2 + 2 + slotW + 1) : 0;
   const minFront = Math.max(minFrontJoint, minFrontLabel);
-  const frontWhy = minFrontLabel > minFrontJoint ? '前緣要放得下顏料名牌的榫槽' : `深度至少 ${needDepth.toFixed(0)}mm 才放得下垂直連接板`;
+  const frontWhy = minFrontLabel > minFrontJoint ? '前緣要放得下顏料名牌' : `深度至少 ${needDepth.toFixed(0)}mm 才放得下垂直連接板`;
   const frontMargin = resolve('frontMargin', Math.max(10, minFront),
     minFront <= 10 ? '預設 10mm' : minFrontLabel > minFrontJoint ? '加寬以放顏料名牌' : '加深以容納垂直連接板',
     [['min', minFront, frontWhy]]);
@@ -221,7 +214,7 @@ export function resolveParams(input = {}) {
 
   const P = {
     thickness: t, tolerance: tol, canDia: D, canHeight: h, kinds: raw.kinds, perKind: raw.perKind,
-    canGap, holeClearance, retainHeight, topGap, sideClear, frontMargin, margin, maxCols, maxRows, labelH: raw.labelH,
+    canGap, holeClearance, retainHeight, topGap, sideClear, frontMargin, margin, maxCols, maxRows,
     racksX: raw.racksX, racksY: raw.racksY, bolt, lockHoleDia: boltHole, screw,
     keyholeHead, keyholeShank: r1(screw + 0.6), keyholeLen: keyholeHead,
     dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap, gridSnap,
@@ -367,8 +360,8 @@ function capSidePanelShape(L) {
   return { outer, holes };
 }
 
-// 層板 / 孔板 / 頂板：2D (u = x, v = z)
-function plateShape(L, withBackTabs, circleHoles) {
+// 層板 / 孔板 / 頂板：2D (u = x, v = z)。frontNotches：從前緣往內的開口槽 [{ x0, x1, z0 }]
+function plateShape(L, withBackTabs, circleHoles, frontNotches = []) {
   const { t, W, zs, depth, sideTabs, tabL, backTabs, backTabL } = L;
   const pts = [[t, zs]];
   if (withBackTabs) {
@@ -378,7 +371,9 @@ function plateShape(L, withBackTabs, circleHoles) {
   }
   pts.push([W - t, zs]);
   for (const zc of sideTabs) pts.push([W - t, zc - tabL / 2], [W, zc - tabL / 2], [W, zc + tabL / 2], [W - t, zc + tabL / 2]);
-  pts.push([W - t, depth], [t, depth]);
+  pts.push([W - t, depth]);
+  for (const n of [...frontNotches].sort((a, b) => b.x0 - a.x0)) pts.push([n.x1, depth], [n.x1, n.z0], [n.x0, n.z0], [n.x0, depth]);
+  pts.push([t, depth]);
   for (const zc of [...sideTabs].reverse()) pts.push([t, zc + tabL / 2], [0, zc + tabL / 2], [0, zc - tabL / 2], [t, zc - tabL / 2]);
   return { outer: pts, holes: circleHoles };
 }
@@ -638,22 +633,23 @@ function nameplateShape(L, opts) {
 }
 
 /**
- * 顏料名牌：夾在層板與固定孔板之間、罐子前方。
- * 下緣榫頭插進層板、上緣榫頭插進孔板，高度 = 兩板之間的空隙（不會凸出孔板卡到手）。
+ * 顏料名牌：站在層板上、孔板下方、罐子前方。下緣兩支榫頭從正面滑進層板前緣的開口槽，
+ * 推到底即定位，隨時可往前拔出。高度只影響名牌本身，最高到孔板下緣（留 1mm）。
  */
 function labelShape(L, opts, art) {
-  const { t, tol } = L;
-  const gap = L.retain - t; // 層板頂面到孔板底面
-  const height = Math.max(4, gap - tol);
+  const { t } = L;
+  const maxH = Math.max(4, L.retain - t - 1); // 層板頂面到孔板底面的空隙
+  const want = Number(opts.height) || 12;
+  const height = Math.min(maxH, Math.max(4, want));
   const span = signSpan(L, opts, 1, 30);
   const w = span.x1 - span.x0;
   const tabL = Math.min(20, w / 6);
   const tabs = [0.2, 0.8].map((f) => span.x0 + w * f);
   const s = signPlate({
-    x0: span.x0, x1: span.x1, top: height, t, tabs, tabL, topTabUp: t + tol,
-    shape: 'rect', art, mode: opts.mode, margin: Math.max(1, Math.min(1.5, height * 0.12)), minFeature: Math.max(1, L.P.bitDia),
+    x0: span.x0, x1: span.x1, top: height, t, tabs, tabL,
+    shape: 'round', art, mode: opts.mode, margin: Math.max(1, Math.min(1.5, height * 0.12)), minFeature: Math.max(1, L.P.bitDia),
   });
-  return { ...s, tabs, tabL, height, span };
+  return { ...s, tabs, tabL, height, maxH, heightClamped: want > maxH + 1e-6, span };
 }
 
 // --- 牆面掛點 -------------------------------------------------------------
@@ -730,13 +726,12 @@ export function buildRack(input, mounts = [], options = {}) {
     }
   }
   const anyLabel = labelShapes.values().next().value;
-  const labelSlots = anyLabel ? anyLabel.tabs.map((xc) => ({
-    type: 'poly', pts: rectCW(xc - anyLabel.tabL / 2 - L.tol / 2, L.labelZ, xc + anyLabel.tabL / 2 + L.tol / 2, L.labelZ + t + L.tol),
-  })) : [];
+  // 層板前緣的開口槽：名牌榫頭從正面滑進來，槽底就是名牌的定位面
+  const labelNotches = anyLabel ? anyLabel.tabs.map((xc) => ({ x0: xc - anyLabel.tabL / 2 - L.tol / 2, x1: xc + anyLabel.tabL / 2 + L.tol / 2, z0: L.labelZ })) : [];
   const shelf = finish(plateShape(L, true, []));
   const holePlate = finish(plateShape(L, false, holeCircles));
-  const shelfLabeled = anyLabel ? finish(plateShape(L, true, labelSlots)) : null;
-  const holePlateLabeled = anyLabel ? finish(plateShape(L, false, [...holeCircles, ...labelSlots])) : null;
+  const shelfLabeled = anyLabel ? finish(plateShape(L, true, [], labelNotches)) : null;
+  if (anyLabel?.heightClamped) warnings.push(`顏料名牌最高 ${r2(anyLabel.maxH)}mm（到孔板下緣）；要更高請在進階調高固定孔板高度`);
 
   const signs = [np, ...labelShapes.values()].filter(Boolean);
   const islands = signs.reduce((n, s) => n + s.islands, 0), tiny = signs.reduce((n, s) => n + s.tiny, 0);
@@ -781,10 +776,10 @@ export function buildRack(input, mounts = [], options = {}) {
         const kind = (j % L.myUnit) * L.rows + rI;
         const ls = labelShapes.get(kind);
         add(`${tag} 層板${rI + 1}`, 'shelf', ls ? shelfLabeled : shelf, [i, j], [x0, y0 + L.shelfY[rI] + t, 0], X, Z, [0, -0.3, 1]);
-        add(`${tag} 孔板${rI + 1}`, 'holeplate', ls ? holePlateLabeled : holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
+        add(`${tag} 孔板${rI + 1}`, 'holeplate', holePlate, [i, j], [x0, y0 + L.holePlateY[rI] + t, 0], X, Z, [0, 0.3, 1.4]);
         if (ls) {
           const p = add(`${tag} 第${kind + 1}種 名牌`, 'label', { outer: dogbone(ls.outer, r), holes: ls.holes }, [i, j],
-            [x0, y0 + L.shelfY[rI] + t, L.labelZ + L.tol / 2], X, Y, [0, 0, 2]);
+            [x0, y0 + L.shelfY[rI] + t, L.labelZ + L.tol / 2], X, Y, [0, 0, 2.5]);
           Object.assign(p, { engrave: ls.engrave, raster: ls.raster, artRect: ls.artRect, artMode: lab.mode, artKey: `label:${kind}`, labelKind: kind, span: ls.span });
         }
       }
@@ -869,6 +864,7 @@ export function buildRack(input, mounts = [], options = {}) {
       nameplateH: np ? np.height : 0,
       labelCount: parts.filter((p) => p.kind === 'label').length,
       labelH: anyLabel ? r2(anyLabel.height) : 0,
+      labelHMax: anyLabel ? r2(anyLabel.maxH) : r2(L.retain - t - 1),
       nameplateSpan: np ? np.span : null,
       labelSpan: anyLabel ? anyLabel.span : null,
     },

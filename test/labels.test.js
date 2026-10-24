@@ -14,6 +14,18 @@ function artMask() {
 }
 const art = { ...artMask() };
 
+// 層板前緣（z = depth）往內凹的開口槽數：兩片側板之間、從前緣往內走的槽壁
+function frontNotchCount(part, L) {
+  const pts = part.outer;
+  let n = 0;
+  for (let k = 0; k < pts.length; k++) {
+    const a = pts[k], b = pts[(k + 1) % pts.length];
+    const inside = a[0] > L.t + 1 && a[0] < L.W - L.t - 1;
+    if (inside && Math.abs(a[1] - L.depth) < 1e-6 && b[1] < L.depth - 1 && Math.abs(a[0] - b[0]) < 1e-6) n++;
+  }
+  return n;
+}
+
 const labels = (items, mode = 'engrave') => ({ enabled: true, mode, height: 18, items });
 
 test('每種顏料各一片名牌，可各自關閉', () => {
@@ -22,52 +34,49 @@ test('每種顏料各一片名牌，可各自關閉', () => {
   const ls = r.parts.filter((p) => p.kind === 'label');
   assert.equal(ls.length, (DEFAULTS.kinds - 1) * r.info.mx);
   assert.ok(!ls.some((p) => p.labelKind === 2), '關閉的第 3 種沒有名牌');
-  // 有名牌的列：孔板多兩個榫槽；關閉的那一列沒有
-  const plates = r.parts.filter((p) => p.kind === 'holeplate');
-  const slotted = plates.filter((p) => p.holes.some((h) => h.type === 'poly'));
-  assert.equal(slotted.length, ls.length);
+  // 有名牌的列：層板前緣多兩個開口槽；孔板完全不動
+  const notched = r.parts.filter((p) => p.kind === 'shelf' && frontNotchCount(p, r.layout) === 2);
+  assert.equal(notched.length, ls.length);
+  assert.ok(r.parts.filter((p) => p.kind === 'holeplate').every((p) => p.holes.every((h) => h.type === 'circle')), '孔板沒有名牌榫槽');
 });
 
-test('顏料名牌開啟時前緣留邊自動加寬，榫槽前後都留得住木料', () => {
+test('顏料名牌開啟時前緣留邊自動加寬，名牌整片收在層板前緣之內', () => {
   const off = resolveParams(DEFAULTS);
   const on = resolveParams({ ...DEFAULTS, labelsOn: true });
-  assert.ok(on.P.frontMargin > off.P.frontMargin);
+  assert.ok(on.P.frontMargin >= off.P.frontMargin);
   const r = buildRack({ ...DEFAULTS, labelsOn: true }, [], { labels: labels([{ on: true, art }]) });
   const L = r.layout;
   assert.ok(L.labelZ >= L.holeZ + L.holeD / 2 + 2 - 1e-9, '罐孔前留 2mm');
-  assert.ok(L.depth - (L.labelZ + L.t + L.tol) >= 5 - 1e-9, '前緣留 5mm');
-  // 手動把前緣設太小會被調回
-  const tight = resolveParams({ ...DEFAULTS, labelsOn: true, frontMargin: 2 });
+  assert.ok(L.depth - (L.labelZ + L.t + L.tol) >= 0, '名牌不凸出層板前緣');
+  const tight = resolveParams({ ...DEFAULTS, labelsOn: true, frontMargin: 0 });
   assert.equal(tight.fields.frontMargin.adjusted, true);
-  assert.match(tight.fields.frontMargin.note, /顏料名牌/);
 });
 
-test('顏料名牌夾在層板與孔板之間、罐子前方，不凸出孔板', () => {
+test('顏料名牌從正面插進層板前緣、站在孔板下方，可往前拔出', () => {
   const r = buildRack({ ...DEFAULTS, labelsOn: true }, [], { labels: labels([{ on: true, art }]) });
   const L = r.layout;
   const p = r.parts.find((q) => q.kind === 'label');
   const can = r.cans.find((c) => c.kind === 0);
   assert.ok(p.origin[2] > can.z + can.r, '在罐子前面');
-  const shelfTop = L.shelfY[0] + L.t, plateBottom = L.holePlateY[0], plateTop = plateBottom + L.t;
+  const shelfTop = L.shelfY[0] + L.t, plateBottom = L.holePlateY[0];
   assert.ok(Math.abs(p.origin[1] - shelfTop) < 1e-9, '站在層板頂面');
   const b = bbox(p.outer);
-  assert.ok(Math.abs(b.minY + L.t) < 1e-6, '下榫頭穿過層板');
-  assert.ok(p.origin[1] + b.maxY <= plateTop + 1e-6, '上榫頭頂多與孔板頂面齊平，不凸出');
-  assert.ok(Math.abs(p.origin[1] + b.maxY - plateTop) < 1e-6);
-  // 層板與孔板都開了對應的榫槽
+  assert.ok(Math.abs(b.minY + L.t) < 1e-6, '下緣榫頭穿過層板');
+  assert.ok(p.origin[1] + b.maxY < plateBottom, '頂端在孔板下緣之下，不卡手');
+  // 層板的開口槽從前緣一路開到名牌背面：往前沒有任何東西擋住
   const shelf = r.parts.find((q) => q.kind === 'shelf' && Math.abs(q.origin[1] - shelfTop) < 1e-9);
-  const plate = r.parts.find((q) => q.kind === 'holeplate' && Math.abs(q.origin[1] - plateTop) < 1e-9);
-  assert.equal(shelf.holes.filter((h) => h.type === 'poly').length, 2);
-  assert.equal(plate.holes.filter((h) => h.type === 'poly').length, 2);
+  assert.equal(frontNotchCount(shelf, L), 2);
+  assert.ok(shelf.outer.some(([x, z]) => Math.abs(z - L.labelZ) < 1e-6 && x > L.t && x < L.W - L.t), '槽底就是名牌的定位面');
 });
 
-test('顏料名牌高度連動孔板高度與罐頂距離', () => {
-  const a = resolveParams({ ...DEFAULTS, labelsOn: true, labelH: 12 });
-  const b = resolveParams({ ...DEFAULTS, labelsOn: true, labelH: 25 });
-  assert.ok(b.P.retainHeight >= DEFAULTS.thickness + 25, '孔板抬高');
-  assert.ok(b.P.topGap > a.P.topGap, '罐頂距離跟著加大');
-  const r = buildRack({ ...DEFAULTS, labelsOn: true, labelH: 25 }, [], { labels: labels([{ on: true, art }]) });
-  assert.ok(r.info.labelH >= 25 - 1e-6);
+test('顏料名牌高度只改名牌本身，最高到孔板下緣', () => {
+  const base = buildRack({ ...DEFAULTS, labelsOn: true }, [], { labels: { ...labels([{ on: true, art }]), height: 8 } });
+  const tall = buildRack({ ...DEFAULTS, labelsOn: true }, [], { labels: { ...labels([{ on: true, art }]), height: 999 } });
+  assert.equal(base.layout.retain, tall.layout.retain, '孔板高度不變');
+  assert.equal(base.layout.P.topGap, tall.layout.P.topGap, '罐頂距離不變');
+  assert.equal(base.info.labelH, 8);
+  assert.equal(tall.info.labelH, tall.info.labelHMax, '被限制在孔板下緣');
+  assert.ok(tall.warnings.some((w) => w.includes('孔板下緣')));
 });
 
 test('雷射名牌：每片各自內嵌自己的點陣', () => {
@@ -131,7 +140,7 @@ test('頂端名牌左右移：頂板榫槽跟著名牌榫頭移動', () => {
   assert.equal(b.info.nameplateSpan.offset, 50);
 });
 
-test('顏料名牌全部連動：同寬、同對齊、同位移，榫槽一致', () => {
+test('顏料名牌全部連動：同寬、同對齊、同位移，開口槽一致', () => {
   const items = [{ on: true, art }, { on: true, art }];
   const r = buildRack({ ...DEFAULTS, kinds: 2, labelsOn: true }, [], { labels: { enabled: true, mode: 'engrave', width: 150, align: 'left', offset: 20, items } });
   const ls = r.parts.filter((p) => p.kind === 'label');
@@ -139,12 +148,15 @@ test('顏料名牌全部連動：同寬、同對齊、同位移，榫槽一致',
   const x0 = ls.map((p) => bbox(p.outer).minX);
   assert.ok(Math.abs(x0[0] - x0[1]) < 1e-6, '每片位置相同');
   assert.ok(Math.abs(ls[0].span.x0 - (ls[0].span.aMin + 20)) < 1e-6, '離左側板 20mm');
-  for (const lab of ls) {
-    const plate = r.parts.find((p) => p.kind === 'holeplate' && p.module.join() === lab.module.join() && p.holes.some((h) => h.type === 'poly'));
-    const slots = plate.holes.filter((h) => h.type === 'poly').map((h) => { const b = bbox(h.pts); return (b.minX + b.maxX) / 2; });
-    const tabs = [0.2, 0.8].map((f) => lab.span.x0 + lab.span.width * f);
-    slots.forEach((x, i) => assert.ok(Math.abs(x - tabs[i]) < 1e-6));
-  }
+  const shelf = r.parts.find((p) => p.kind === 'shelf' && frontNotchCount(p, r.layout) === 2);
+  // 槽底（z = labelZ）上的點依 x 分群，每群的中心就是一個開口槽的中心
+  const xs = shelf.outer.filter(([, z]) => Math.abs(z - r.layout.labelZ) < 1e-6).map(([x]) => x).sort((a, b) => a - b);
+  const groups = [];
+  for (const x of xs) (groups.length && x - groups.at(-1).at(-1) < 25 ? groups.at(-1) : groups[groups.push([]) - 1]).push(x);
+  const centers = groups.map((g) => (g[0] + g.at(-1)) / 2);
+  const tabs = [0.2, 0.8].map((f) => ls[0].span.x0 + ls[0].span.width * f);
+  assert.equal(centers.length, 2);
+  centers.forEach((c, i) => assert.ok(Math.abs(c - tabs[i]) < 1e-6, '開口槽中心對準名牌榫頭'));
 });
 
 test('對齊方式：拉寬窄時對齊的那一側不動', () => {
