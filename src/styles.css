@@ -296,3 +296,6 @@ details.group[open] summary::before { transform: rotate(90deg); }
   body:not(.sidebar-closed) #inspector { bottom: calc(52vh + 70px + env(safe-area-inset-bottom, 0px)); }
   #inspector { bottom: calc(118px + env(safe-area-inset-bottom, 0px)); }
 }
+
+/* 版本標記：部署時換成提交編號，方便確認瀏覽器是否載入新版 */
+#sidebar h1 .ver { font-size: 10px; font-weight: 500; color: var(--muted); background: var(--field); padding: 1px 6px; border-radius: 999px; vertical-align: middle; letter-spacing: 0; }
