@@ -1,12 +1,22 @@
 // 零件平面排版與輸出 (SVG / DXF / BOM)
 
-import { bbox } from './geometry.js';
+import { bbox, offsetContour, ensureOrientation } from './geometry.js';
 
-/** 將零件 2D 輪廓平移到原點，可選擇旋轉 90° */
-export function flatten(part, rotate = false) {
+/**
+ * 將零件 2D 輪廓平移到原點，可選擇旋轉 90°。
+ * kerf > 0（雷射）：外框往外、孔往內各偏移半個切縫，切出來才是設計尺寸。
+ */
+export function flatten(part, rotate = false, kerf = 0) {
   const rot = rotate ? ([x, y]) => [-y, x] : (p) => p;
-  const outer = part.outer.map(rot);
-  const holes = part.holes.map((h) => (h.type === 'circle' ? { ...h, c: rot(h.c) } : { ...h, pts: h.pts.map(rot) }));
+  const k = kerf / 2;
+  let outer = part.outer.map(rot);
+  let holes = part.holes.map((h) => (h.type === 'circle' ? { ...h, c: rot(h.c) } : { ...h, pts: h.pts.map(rot) }));
+  if (k > 0) {
+    outer = offsetContour(ensureOrientation(outer, true), k);
+    holes = holes.map((h) => (h.type === 'circle'
+      ? { ...h, r: Math.max(0.05, h.r - k) }
+      : { ...h, pts: offsetContour(ensureOrientation(h.pts, false), k) }));
+  }
   const b = bbox(outer);
   const sh = ([x, y]) => [x - b.minX, y - b.minY];
   const map = (p) => sh(rot(p));
@@ -31,7 +41,7 @@ export function layoutParts(parts, P) {
     // 長邊水平；若放不下則改直放
     let rotate = b.h > b.w;
     if (Math.max(b.w, b.h) > W - 2 * g) rotate = b.w > b.h;
-    const f = flatten(part, rotate);
+    const f = flatten(part, rotate, P.kerf || 0);
     if (f.w > W - 2 * g || f.h > H - 2 * g) warnings.push(`${part.name} 尺寸 ${f.w.toFixed(0)}×${f.h.toFixed(0)} 超過板材`);
     return { part, flat: f, rotate };
   });
@@ -48,7 +58,7 @@ export function layoutParts(parts, P) {
     x += it.flat.w + g;
     rowH = Math.max(rowH, it.flat.h);
   }
-  return { sheets, warnings, sheetW: W, sheetH: H };
+  return { sheets, warnings, sheetW: W, sheetH: H, laser: P.machine === 'laser', kerf: P.kerf || 0 };
 }
 
 const f3 = (v) => (Math.round(v * 1000) / 1000).toString();
@@ -64,9 +74,12 @@ export function toSVG(layout, rasterHref = null) {
   const out = [];
   out.push(`<?xml version="1.0" encoding="UTF-8"?>`);
   out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}mm" height="${H}mm" viewBox="0 0 ${totalW} ${H}">`);
-  out.push(`<g id="sheet" fill="none" stroke="#999" stroke-width="0.5" stroke-dasharray="6 4">`);
-  sheets.forEach((_, s) => out.push(`<rect x="${s * (W + sp)}" y="0" width="${W}" height="${H}"/>`));
-  out.push(`</g>`);
+  // 雷射：板材框與文字不輸出（雷射軟體會把所有線都當成要切的路徑）
+  if (!layout.laser) {
+    out.push(`<g id="sheet" fill="none" stroke="#999" stroke-width="0.5" stroke-dasharray="6 4">`);
+    sheets.forEach((_, s) => out.push(`<rect x="${s * (W + sp)}" y="0" width="${W}" height="${H}"/>`));
+    out.push(`</g>`);
+  }
   const inner = [], outer = [], labels = [], engrave = [], rasters = [];
   sheets.forEach((sheet, s) => {
     const ox = s * (W + sp);
@@ -93,11 +106,14 @@ export function toSVG(layout, rasterHref = null) {
       labels.push(`<text x="${f3(lx)}" y="${f3(ly)}">${escapeXml(it.part.name)}</text>`);
     }
   });
+  // 雷射：髮絲線＋純色（LightBurn 等軟體依顏色分圖層：先雕刻、再切內孔、最後切外框）
+  const sw = layout.laser ? 0.01 : null;
+  const color = layout.laser ? { engrave: '#000000', inside: '#0000ff', outside: '#ff0000' } : { engrave: '#2f9e6b', inside: '#0070f3', outside: '#e5484d' };
   if (rasters.length) out.push(`<g id="engrave-raster">`, ...rasters, `</g>`);
-  if (engrave.length) out.push(`<g id="engrave" fill="none" stroke="#2f9e6b" stroke-width="0.2">`, ...engrave, `</g>`);
-  out.push(`<g id="cut-inside" fill="none" stroke="#0070f3" stroke-width="0.3">`, ...inner, `</g>`);
-  out.push(`<g id="cut-outside" fill="none" stroke="#e5484d" stroke-width="0.3">`, ...outer, `</g>`);
-  out.push(`<g id="labels" fill="#888" font-size="6" font-family="sans-serif" text-anchor="middle">`, ...labels, `</g>`);
+  if (engrave.length) out.push(`<g id="engrave" fill="none" stroke="${color.engrave}" stroke-width="${sw ?? 0.2}">`, ...engrave, `</g>`);
+  out.push(`<g id="cut-inside" fill="none" stroke="${color.inside}" stroke-width="${sw ?? 0.3}">`, ...inner, `</g>`);
+  out.push(`<g id="cut-outside" fill="none" stroke="${color.outside}" stroke-width="${sw ?? 0.3}">`, ...outer, `</g>`);
+  if (!layout.laser) out.push(`<g id="labels" fill="#888" font-size="6" font-family="sans-serif" text-anchor="middle">`, ...labels, `</g>`);
   out.push(`</svg>`);
   return out.join('\n');
 }
@@ -130,7 +146,7 @@ export function toDXF(layout) {
   };
   sheets.forEach((sheet, s) => {
     const ox = s * (W + sp);
-    poly('SHEET', [[ox, 0], [ox + W, 0], [ox + W, H], [ox, H]]);
+    if (!layout.laser) poly('SHEET', [[ox, 0], [ox + W, 0], [ox + W, H], [ox, H]]);
     for (const it of sheet.items) {
       const tr = ([u, v]) => [ox + it.x + u, it.y + v];
       for (const l of it.flat.engrave || []) poly('ENGRAVE', l.map(tr));
@@ -142,7 +158,7 @@ export function toDXF(layout) {
       }
       poly('CUT_OUTSIDE', it.flat.outer.map(tr));
       const [lx, ly] = tr([it.flat.w / 2, it.flat.h / 2]);
-      g(0, 'TEXT'); g(8, 'LABEL'); g(10, f3(lx)); g(20, f3(ly)); g(30, 0); g(40, 5); g(1, it.part.name);
+      if (!layout.laser) { g(0, 'TEXT'); g(8, 'LABEL'); g(10, f3(lx)); g(20, f3(ly)); g(30, 0); g(40, 5); g(1, it.part.name); }
     }
   });
   g(0, 'ENDSEC'); g(0, 'EOF');

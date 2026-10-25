@@ -299,3 +299,5 @@ details.group[open] summary::before { transform: rotate(90deg); }
 
 /* 版本標記：部署時換成提交編號，方便確認瀏覽器是否載入新版 */
 #sidebar h1 .ver { font-size: 10px; font-weight: 500; color: var(--muted); background: var(--field); padding: 1px 6px; border-radius: 999px; vertical-align: middle; letter-spacing: 0; }
+
+.field select:disabled { opacity: 0.45; cursor: not-allowed; }

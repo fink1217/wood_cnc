@@ -765,6 +765,7 @@ function renderParams() {
       <button id="adv-reset" class="ghost">進階全部改回自動</button>
     </details>`;
   $('assembly').innerHTML = ASSEMBLY_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('');
+  syncMachineUI();
   try { $('advanced').open = localStorage.getItem(STORE_KEY + '.adv') === '1'; } catch { /* 忽略 */ }
   $('advanced').addEventListener('toggle', () => {
     try { localStorage.setItem(STORE_KEY + '.adv', $('advanced').open ? '1' : '0'); } catch { /* 忽略 */ }
@@ -795,7 +796,12 @@ for (const root of [$('params'), $('assembly')]) {
   root.addEventListener('change', (e) => {
     const el = e.target, key = el.dataset.key;
     if (!key) return;
-    if (el.dataset.choice) { state.params[key] = el.value; onParamsChanged(); return; }
+    if (el.dataset.choice) {
+      state.params[key] = el.value;
+      if (key === 'machine') switchMachine(el.value);
+      onParamsChanged();
+      return;
+    }
     // 基本欄位：離開時顯示夾到範圍內的值
     if (!el.dataset.adv) el.value = normalizeParams(state.params)[key];
   });
@@ -807,6 +813,24 @@ for (const root of [$('params'), $('assembly')]) {
     $('param-' + key).value = '';
     onParamsChanged();
   });
+}
+
+// 換加工機器：板材換成適合的預設尺寸；雷射不用選銑刀
+const LASER_SHEETS = ['1300x900', '900x600', '600x400'];
+function switchMachine(machine) {
+  const laserSheet = LASER_SHEETS.includes(state.params.sheet);
+  if (machine === 'laser' && !laserSheet) state.params.sheet = '900x600';
+  if (machine === 'cnc' && laserSheet) state.params.sheet = '1220x2440';
+  if ($('param-sheet')) $('param-sheet').value = state.params.sheet;
+  syncMachineUI();
+}
+function syncMachineUI() {
+  const laser = state.params.machine === 'laser';
+  const bit = $('param-bit');
+  if (bit) {
+    bit.disabled = laser;
+    bit.title = laser ? '雷射切割不需要銑刀（內角是尖的）' : '';
+  }
 }
 
 /** 依連動結果更新進階欄位的提示與自動值 */

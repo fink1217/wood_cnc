@@ -139,3 +139,34 @@ export function bbox(pts) {
 export function rectsOverlap(a, b, pad = 0) {
   return a.minX < b.maxX + pad && b.minX < a.maxX + pad && a.minY < b.maxY + pad && b.minY < a.maxY + pad;
 }
+
+/**
+ * 把輪廓往「切除那一側」偏移 d（雷射切縫補償）。
+ * 輪廓須為材料在左側：外框逆時針會往外長、內孔順時針會往內縮。
+ * 尖角用斜接，過尖時限制長度避免長出尖刺。
+ */
+export function offsetContour(pts, d) {
+  pts = cleanPolygon(pts);
+  if (!(Math.abs(d) > 0) || pts.length < 3) return pts;
+  const n = pts.length;
+  const normals = [];
+  for (let i = 0; i < n; i++) {
+    const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % n];
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+    normals.push([(y2 - y1) / len, -(x2 - x1) / len]); // 行進方向的右側 = 切除側
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = normals[(i - 1 + n) % n], b = normals[i];
+    const [px, py] = pts[i];
+    let mx = a[0] + b[0], my = a[1] + b[1];
+    const ml = Math.hypot(mx, my);
+    if (ml < 1e-9) { out.push([px + b[0] * d, py + b[1] * d]); continue; }
+    mx /= ml; my /= ml;
+    // 斜接長度 = d / cos(半角)，限制在 4d 以內
+    const cosHalf = Math.max(0.25, mx * b[0] + my * b[1]);
+    const k = d / cosHalf;
+    out.push([px + mx * k, py + my * k]);
+  }
+  return out;
+}

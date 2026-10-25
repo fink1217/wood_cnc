@@ -20,6 +20,7 @@ export const DEFAULTS = {
   canHeight: 55,
   kinds: 6,
   perKind: 8,
+  machine: 'cnc',
   bit: '3.175',
   sheet: '1220x2440',
   screw: '4',
@@ -36,6 +37,7 @@ export const DEFAULTS = {
   maxCols: null,
   maxRows: null,
   bitDia: null,
+  kerf: null,
   sheetW: null,
   sheetH: null,
   partGap: null,
@@ -52,8 +54,9 @@ export const BASIC_SPEC = [
 ];
 
 export const CHOICE_SPEC = [
-  { key: 'bit', label: '銑刀', options: [['0', '不清角'], ['3.175', '1/8″ (3.175)'], ['6', '6 mm'], ['6.35', '1/4″ (6.35)']] },
-  { key: 'sheet', label: 'CNC 板材', options: [['1220x2440', '4×8 尺 (1220×2440)'], ['1220x3050', '4×10 尺 (1220×3050)'], ['915x1830', '3×6 尺 (915×1830)'], ['915x2135', '3×7 尺 (915×2135)'], ['600x900', 'CNC 小板 600×900'], ['600x600', 'CNC 小板 600×600']] },
+  { key: 'machine', label: '加工機器', options: [['cnc', 'CNC 雕刻機'], ['laser', '雷射切割機']] },
+  { key: 'bit', label: '銑刀', laserLabel: '雷射不需要', options: [['0', '不清角'], ['3.175', '1/8″ (3.175)'], ['6', '6 mm'], ['6.35', '1/4″ (6.35)']] },
+  { key: 'sheet', label: 'CNC 板材', options: [['1220x2440', '4×8 尺 (1220×2440)'], ['1220x3050', '4×10 尺 (1220×3050)'], ['915x1830', '3×6 尺 (915×1830)'], ['915x2135', '3×7 尺 (915×2135)'], ['600x900', 'CNC 小板 600×900'], ['600x600', 'CNC 小板 600×600'], ['1300x900', '雷射 1300×900'], ['900x600', '雷射 900×600'], ['600x400', '雷射 600×400']] },
   { key: 'screw', label: '掛牆螺絲', options: [['3.5', '3.5 mm'], ['4', '4 mm'], ['5', '5 mm']] },
   { key: 'bolt', label: '連接螺栓', options: [['M4', 'M4'], ['M5', 'M5'], ['M6', 'M6']] },
 ];
@@ -78,6 +81,7 @@ export const ADVANCED_SPEC = [
   { key: 'maxCols', label: '每模組最多欄', unit: '罐', min: 1, max: 40, step: 1, int: true },
   { key: 'maxRows', label: '每模組最多列', unit: '列', min: 1, max: 20, step: 1, int: true },
   { key: 'bitDia', label: '銑刀直徑', unit: 'mm', min: 0, max: 12.7, step: 0.05 },
+  { key: 'kerf', label: '雷射切縫', unit: 'mm', min: 0, max: 1, step: 0.01 },
   { key: 'sheetW', label: '板材寬', unit: 'mm', min: 200, max: 3000, step: 10 },
   { key: 'sheetH', label: '板材長', unit: 'mm', min: 200, max: 5000, step: 10 },
   { key: 'partGap', label: '排版間距', unit: 'mm', min: 0, max: 50, step: 1 },
@@ -145,7 +149,11 @@ export function resolveParams(input = {}) {
 
   const t = raw.thickness, tol = raw.tolerance, D = raw.canDia, h = raw.canHeight;
 
-  const bitDia = resolve('bitDia', Number(raw.bit), '依銑刀選擇');
+  const laser = raw.machine === 'laser';
+  // 雷射：刀徑視為 0（內角切得尖，不需狗骨頭）；切縫在匯出時補償
+  const bitDia = resolve('bitDia', laser ? 0 : Number(raw.bit), laser ? '雷射切割，內角是尖的、不需清角' : '依銑刀選擇');
+  const kerf = resolve('kerf', laser ? 0.15 : 0, laser ? '雷射常見切縫 0.15mm，匯出時外框外擴、孔內縮一半' : 'CNC 由 CAM 做刀具補償');
+  if (laser && t > 10) warnings.push(`雷射切割 ${t}mm 板材偏厚：一般 CO₂ 雷射合板建議 3–9mm，請確認機器功率`);
   const slotW = t + tol;
   if (bitDia > slotW) warnings.push(`銑刀 ⌀${bitDia} 比榫槽寬 ${r2(slotW)}mm 還粗，榫槽無法加工；請換細刀或加厚板材`);
   else if (bitDia > 0 && bitDia / 2 * Math.SQRT2 * 2 > slotW) warnings.push(`銑刀 ⌀${bitDia} 對 ${r2(slotW)}mm 榫槽太粗，部分內角無法加狗骨頭`);
@@ -153,7 +161,8 @@ export function resolveParams(input = {}) {
   const [sw, sh] = raw.sheet.split('x').map(Number);
   const sheetW = resolve('sheetW', Math.min(sw, sh), '依板材選擇');
   const sheetH = resolve('sheetH', Math.max(sw, sh), '依板材選擇');
-  const partGap = resolve('partGap', Math.max(6, Math.ceil(bitDia * 2 + 2)), '銑刀直徑 × 2 + 2', [['min', bitDia + 1, '必須大於銑刀直徑']]);
+  const partGap = resolve('partGap', laser ? 3 : Math.max(6, Math.ceil(bitDia * 2 + 2)), laser ? '雷射零件間距 3mm' : '銑刀直徑 × 2 + 2',
+    [['min', laser ? Math.max(1, kerf * 4) : bitDia + 1, laser ? '至少留 4 倍切縫，避免燒焦相連' : '必須大於銑刀直徑']]);
 
   const holeClearance = resolve('holeClearance', clampNum(Math.round(D * 0.03 * 2) / 2, 1, 3), '罐徑 × 3%');
   const canGap = resolve('canGap', Math.max(6, Math.ceil(holeClearance + 4), Math.ceil(t * 0.6)), '依餘隙與板厚',
@@ -224,7 +233,7 @@ export function resolveParams(input = {}) {
     canGap, holeClearance, retainHeight, topGap, sideClear, frontMargin, margin, maxCols, maxRows, labelsOn: raw.labelsOn, labelH,
     racksX: raw.racksX, racksY: raw.racksY, bolt, lockHoleDia: boltHole, screw,
     keyholeHead, keyholeShank: r1(screw + 0.6), keyholeLen: keyholeHead,
-    dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap, gridSnap,
+    machine: raw.machine, kerf, dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap, gridSnap,
   };
   return { P, raw, fields, warnings };
 }
