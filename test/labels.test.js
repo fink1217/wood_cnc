@@ -57,15 +57,27 @@ test('顏料名牌兩端插進左右側板前緣的開口槽，可往前拔出',
   assert.ok(side.outer.some(([z, y]) => Math.abs(z - (L.labelZ - L.tol / 2)) < 1e-6 && Math.abs(y - (L.shelfY[0] - L.tol / 2)) < 0.5), '槽底在名牌背面');
 });
 
-test('顏料名牌高度自由調整，只改名牌本身', () => {
-  const mk = (height) => buildRack({ ...DEFAULTS, labelsOn: true }, [], { labels: { ...labels([{ on: true, art }]), height } });
-  const a = mk(15), b = mk(45), c = mk(9999);
-  assert.equal(a.info.labelH, 15);
-  assert.equal(b.info.labelH, 45, '可以高過孔板');
-  assert.equal(a.layout.retain, b.layout.retain, '孔板高度不變');
-  assert.equal(a.layout.P.topGap, b.layout.P.topGap, '罐頂距離不變');
-  assert.equal(c.info.labelH, c.info.labelHMax, '最高不碰到上一列');
-  assert.ok(c.info.labelHMax < c.layout.rowPitch);
+test('顏料名牌低於孔板時不影響其他零件；高過孔板時罐頂距離自動加大', () => {
+  const mk = (labelH) => buildRack({ ...DEFAULTS, labelsOn: true, labelH }, [], { labels: labels([{ on: true, art }]) });
+  const base = buildRack(DEFAULTS, []);
+  const low = mk(20), high = mk(50), huge = mk(9999);
+  const dflt = buildRack({ ...DEFAULTS, labelsOn: true }, [], { labels: labels([{ on: true, art }]) });
+  assert.equal(dflt.layout.P.topGap, base.layout.P.topGap, '預設名牌不改罐頂距離');
+  const L = low.layout;
+  assert.equal(low.info.labelH, 20);
+  assert.equal(low.layout.P.topGap, base.layout.P.topGap, '名牌頂端低於孔板：罐頂距離不變');
+  assert.equal(low.layout.retain, base.layout.retain, '孔板高度一律不變');
+  assert.equal(high.layout.retain, base.layout.retain);
+  // 名牌 50mm：罐子要提起 50 - 板厚 + 2，再多 8mm 才好拿
+  assert.equal(high.layout.P.topGap, 50 - L.t + 2 + 8);
+  assert.ok(high.layout.P.topGap > base.layout.P.topGap, '自動抬高');
+  assert.match(high.layout.fields.topGap.note, /名牌/);
+  assert.equal(huge.info.labelH, L.t + DEFAULTS.canHeight, '最高到罐頂');
+  assert.ok(huge.warnings.some((w) => w.includes('罐頂')));
+  // 手動把罐頂距離設小也會被拉回
+  const manual = resolveParams({ ...DEFAULTS, labelsOn: true, labelH: 50, topGap: 10 });
+  assert.equal(manual.P.topGap, 50 - L.t + 2 + 8);
+  assert.equal(manual.fields.topGap.adjusted, true);
 });
 
 test('雷射名牌：每片各自內嵌自己的點陣', () => {

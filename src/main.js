@@ -44,6 +44,7 @@ const labelOn = (k) => state.labels.items[k]?.on !== false;
 const rackInput = () => ({
   ...state.params,
   labelsOn: state.labels.enabled && kindsCount() > 0 && [...Array(kindsCount()).keys()].some(labelOn),
+  labelH: state.labels.height, // 名牌高過孔板時，罐頂距離自動加大
 });
 const kindsCount = () => normalizeParams(state.params).kinds;
 loadState();
@@ -473,7 +474,7 @@ function moveDrag() {
   }
   if (drag.type === 'top') {
     if (key === 'top') cfg.height = Math.round(Math.min(300, Math.max(20, v - L.e)));
-    else cfg.height = Math.round(Math.min(rack.info.labelHMax, Math.max(6, v))); // 顏料名牌板：高度自由，其他零件不動
+    else cfg.height = Math.round(Math.min(rack.info.labelHMax, Math.max(6, v))); // 顏料名牌板：高過孔板時罐頂距離自動加大
   }
   renderInspector();
   rebuildSoon();
@@ -488,7 +489,8 @@ function endDrag() {
   handlesGroup.position.x = 0;
   if (d.moved) {
     saveState();
-    rebuild();
+    // 顏料名牌高度會連動罐頂距離（列距）：走參數連動，掛點跟著調整
+    if (d.type === 'top' && d.key !== 'top') onParamsChanged(); else rebuild();
   }
 }
 
@@ -557,7 +559,7 @@ function renderInspector() {
       <div class="seg insp-align">${['left', 'center', 'right'].map((a) => `<button data-align="${a}" aria-pressed="${s.align === a}">${alignText[a]}</button>`).join('')}</div>
       ${nudgeRow('offset', offLabel, fmtInput(s.offset), 'mm', s.maxOffset - s.minOffset < 0.5 ? '<small>滿寬時無法移動</small>' : '')}
       ${nudgeRow('width', '寬度', fmtInput(s.width), 'mm', `<button class="ghost" data-insp-act="full">滿寬</button>`)}
-      ${nudgeRow('height', key === 'top' ? '高出頂蓋' : '名牌高度', fmtInput(signHeight(part)), 'mm', key === 'top' ? '' : `<small>只改名牌本身，最高 ${fmt(rack.info.labelHMax)} mm（不碰到上一列）</small>`)}
+      ${nudgeRow('height', key === 'top' ? '高出頂蓋' : '名牌高度', fmtInput(signHeight(part)), 'mm', key === 'top' ? '' : `<small>${rack.layout.fields.topGap?.note?.includes('名牌') ? '名牌高過孔板，罐頂距離已自動加大，罐子才提得過名牌' : '低於孔板時不影響其他零件'}；最高 ${fmt(rack.info.labelHMax)} mm（到罐頂）</small>`)}
       ${key === 'top' ? '' : '<p class="hint">名牌板兩端插進左右側板前緣的開口槽，從正面推進去、隨時可拔出；左右／寬度調整的是文字區。</p>'}
       <div class="row-buttons"><button class="ghost" data-insp-act="reset">還原滿寬置中</button></div>`;
     el.hidden = false;
@@ -587,7 +589,7 @@ function applyInspector(key, value) {
     if (key === 'width') cfg.width = value >= part.span.full - 0.5 ? null : value;
     if (key === 'height') cfg.height = k === 'top' ? value : Math.min(rack.info.labelHMax, Math.max(6, value));
     saveState();
-    rebuild();
+    if (key === 'height' && k !== 'top') onParamsChanged(); else rebuild();
   } else if (m) {
     const L = rack.layout;
     if (key === 'mx') m.x = Math.min(L.totalW, Math.max(0, value));
@@ -1349,7 +1351,7 @@ function renderNameplate() {
   $('lb-reset').onclick = () => {
     Object.assign(lb, { width: null, height: null, align: 'center', offset: 0 });
     saveState();
-    rebuild();
+    onParamsChanged();
   };
   $('np-file').onchange = async (e) => {
     const file = e.target.files[0];
