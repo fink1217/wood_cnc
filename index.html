@@ -2,8 +2,12 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#060708" />
   <title>顏料罐木架產生器</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" />
   <link rel="stylesheet" href="src/styles.css" />
   <script type="importmap">
     {
@@ -16,80 +20,89 @@
 </head>
 <body>
   <div id="viewport"></div>
+  <div id="fx" aria-hidden="true"></div>
 
-  <!-- 畫面上的直覺操作：視角、顯示、爆炸圖、提示 -->
-  <div id="toolbar" role="toolbar" aria-label="檢視">
-    <div class="seg">
-      <button id="view-front" title="正視">正視</button>
-      <button id="view-iso" title="等角">等角</button>
-      <button id="view-side" title="側視">側視</button>
-    </div>
-    <label class="tool-toggle"><input type="checkbox" id="show-cans" checked /><span>罐子</span></label>
-    <label class="tool-toggle"><input type="checkbox" id="show-dims" checked /><span>尺寸</span></label>
-    <label class="tool-range"><span>爆炸</span><input type="range" id="explode" min="0" max="1" step="0.01" value="0" /></label>
-  </div>
+  <div id="brand"><i></i>PAINT&nbsp;RACK <span class="ver">dev</span></div>
   <div id="hint" aria-live="polite"></div>
   <div id="tooltip" hidden></div>
+
+  <!-- 畫面上的直覺操作：視角、顯示、爆炸圖 -->
+  <div id="toolbar" role="toolbar" aria-label="檢視">
+    <div class="seg" id="views">
+      <button id="view-front" title="正視" aria-label="正視"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></button>
+      <button id="view-iso" title="等角" aria-label="等角"><svg viewBox="0 0 24 24"><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z M12 12l8-4.5 M12 12v9 M12 12 4 7.5"/></svg></button>
+      <button id="view-side" title="側視" aria-label="側視"><svg viewBox="0 0 24 24"><path d="M9 4h6v16H9z M9 9h6 M9 14h6"/></svg></button>
+    </div>
+    <span class="sep"></span>
+    <label class="tool-toggle" title="顯示罐子"><input type="checkbox" id="show-cans" checked aria-label="顯示罐子" /><span><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="6" ry="2.5"/><path d="M6 6v12c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V6"/></svg></span></label>
+    <label class="tool-toggle" title="顯示尺寸"><input type="checkbox" id="show-dims" checked aria-label="顯示尺寸" /><span><svg viewBox="0 0 24 24"><path d="M3 17 17 3l4 4L7 21z M7 13l2 2 M10 10l2 2 M13 7l2 2"/></svg></span></label>
+    <label class="tool-toggle" title="爆炸圖"><input type="checkbox" id="explode" aria-label="爆炸圖" /><span><svg viewBox="0 0 24 24"><path d="M9 9H4V4h5z M20 9h-5V4h5z M9 20H4v-5h5z M20 20h-5v-5h5z"/></svg></span></label>
+  </div>
+
   <div id="inspector" hidden aria-live="polite"></div>
 
-  <button id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true" title="收合側欄">
-    <span class="when-open">收合 ›</span><span class="when-closed">‹ 展開側欄</span>
+  <button id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true" title="收合側欄" aria-label="收合側欄">
+    <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
   </button>
 
-  <aside id="sidebar">
-    <header>
-      <h1>顏料罐木架 <span class="ver">dev</span></h1>
+  <aside id="sidebar" data-sheet="half">
+    <header id="sheet-head">
+      <div class="grabber" aria-hidden="true"></div>
       <div id="summary"></div>
       <div id="warnings"></div>
       <nav class="tabs" role="tablist">
         <button role="tab" data-tab="design">設計</button>
         <button role="tab" data-tab="signs">名牌</button>
         <button role="tab" data-tab="mounts">掛點</button>
-        <button role="tab" data-tab="output">材料</button>
+        <button role="tab" data-tab="output">輸出</button>
+        <i class="tab-ink" aria-hidden="true"></i>
       </nav>
     </header>
 
-    <div class="panel" data-panel="design">
-      <section id="params"></section>
-      <section>
-        <h2>多架組裝</h2>
-        <div id="assembly" class="param-block"></div>
-      </section>
-    </div>
+    <div class="sheet-body">
+      <div class="panel" data-panel="design">
+        <section id="params"></section>
+        <section>
+          <h2>多架組裝</h2>
+          <div id="assembly" class="param-block"></div>
+        </section>
+      </div>
 
-    <div class="panel" data-panel="signs">
-      <section id="nameplate"></section>
-    </div>
+      <div class="panel" data-panel="signs">
+        <section id="nameplate"></section>
+      </div>
 
-    <div class="panel" data-panel="mounts">
-      <section>
-        <div class="row-buttons">
-          <button id="mount-add">新增掛點</button>
-          <button id="mount-auto">每模組 2 個</button>
-          <button id="mount-clear" class="ghost">全部清除</button>
-        </div>
-        <div id="mount-edit"></div>
-        <div id="mount-list"></div>
-        <div id="mount-pairs"></div>
-      </section>
-    </div>
+      <div class="panel" data-panel="mounts">
+        <section>
+          <div class="row-buttons">
+            <button id="mount-add" class="primary">＋ 新增掛點</button>
+            <button id="mount-auto">每模組 2 個</button>
+            <button id="mount-clear" class="ghost">清除</button>
+          </div>
+          <div id="mount-list"></div>
+          <div id="mount-pairs"></div>
+        </section>
+      </div>
 
-    <div class="panel" data-panel="output">
-      <section>
-        <div class="row-buttons">
-          <button id="export-zip" class="primary">全部打包 ZIP</button>
-          <button id="export-dxf">DXF</button>
-          <button id="export-svg">SVG</button>
-          <button id="export-bom">CSV</button>
-          <button id="export-json">JSON</button>
+      <div class="panel" data-panel="output">
+        <section>
+          <button id="export-zip" class="primary wide">全部打包 ZIP</button>
+          <div class="row-buttons grid4">
+            <button id="export-dxf">DXF</button>
+            <button id="export-svg">SVG</button>
+            <button id="export-bom">CSV</button>
+            <button id="export-json">JSON</button>
+          </div>
+          <p class="hint" id="layout-info"></p>
+          <p id="export-msg"></p>
+        </section>
+        <section id="connectors"></section>
+        <section id="bom"></section>
+        <section class="row-buttons">
           <label class="button ghost">匯入 JSON<input type="file" id="import-json" accept="application/json" hidden /></label>
-        </div>
-        <p class="hint" id="layout-info"></p>
-        <p id="export-msg"></p>
-      </section>
-      <section id="connectors"></section>
-      <section id="bom"></section>
-      <section><button id="reset" class="ghost">恢復預設參數</button></section>
+          <button id="reset" class="ghost">恢復預設參數</button>
+        </section>
+      </div>
     </div>
   </aside>
 
