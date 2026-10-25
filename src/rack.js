@@ -135,11 +135,11 @@ export function resolveParams(input = {}) {
     let note = auto ? autoWhy : '';
     for (const [kind, limit, why] of bounds) {
       if (limit == null || !Number.isFinite(limit)) continue;
-      if (kind === 'max' && v > limit + 1e-9) { v = limit; if (!auto) note = `已調為 ${r2(v)}：${why}`; }
+      if (kind === 'max' && v > limit + 1e-9) { v = limit; if (!auto) note = `改成 ${r2(v)}，${why}`; }
     }
     for (const [kind, limit, why] of bounds) {
       if (limit == null || !Number.isFinite(limit)) continue;
-      if (kind === 'min' && v < limit - 1e-9) { v = limit; if (!auto) note = `已調為 ${r2(v)}：${why}`; }
+      if (kind === 'min' && v < limit - 1e-9) { v = limit; if (!auto) note = `改成 ${r2(v)}，${why}`; }
     }
     v = r2(v);
     const mins = bounds.filter(([kind, limit]) => kind === 'min' && Number.isFinite(limit)).map(([, limit]) => limit);
@@ -151,36 +151,36 @@ export function resolveParams(input = {}) {
 
   const laser = raw.machine === 'laser';
   // 雷射：刀徑視為 0（內角切得尖，不需狗骨頭）；切縫在匯出時補償
-  const bitDia = resolve('bitDia', laser ? 0 : Number(raw.bit), laser ? '雷射切割，內角是尖的、不需清角' : '依銑刀選擇');
-  const kerf = resolve('kerf', laser ? 0.15 : 0, laser ? '雷射常見切縫 0.15mm，匯出時外框外擴、孔內縮一半' : 'CNC 由 CAM 做刀具補償');
-  if (laser && t > 10) warnings.push(`雷射切割 ${t}mm 板材偏厚：一般 CO₂ 雷射合板建議 3–9mm，請確認機器功率`);
+  const bitDia = resolve('bitDia', laser ? 0 : Number(raw.bit), laser ? '雷射切得出尖角，不用清角' : '跟著銑刀選單');
+  const kerf = resolve('kerf', laser ? 0.15 : 0, laser ? '一般雷射約 0.15mm，匯出時會補回來' : 'CNC 由 CAM 做刀具補償');
+  if (laser && t > 10) warnings.push(`${t}mm 對雷射來說偏厚，CO₂ 雷射切合板一般在 3–9mm，先確認你的機器切得穿`);
   const slotW = t + tol;
-  if (bitDia > slotW) warnings.push(`銑刀 ⌀${bitDia} 比榫槽寬 ${r2(slotW)}mm 還粗，榫槽無法加工；請換細刀或加厚板材`);
-  else if (bitDia > 0 && bitDia / 2 * Math.SQRT2 * 2 > slotW) warnings.push(`銑刀 ⌀${bitDia} 對 ${r2(slotW)}mm 榫槽太粗，部分內角無法加狗骨頭`);
+  if (bitDia > slotW) warnings.push(`⌀${bitDia} 的銑刀比 ${r2(slotW)}mm 的榫槽還寬，槽銑不出來。換細一點的刀，或用厚一點的板`);
+  else if (bitDia > 0 && bitDia / 2 * Math.SQRT2 * 2 > slotW) warnings.push(`⌀${bitDia} 的銑刀對 ${r2(slotW)}mm 的榫槽偏粗，有些內角加不了狗骨頭`);
 
   const [sw, sh] = raw.sheet.split('x').map(Number);
-  const sheetW = resolve('sheetW', Math.min(sw, sh), '依板材選擇');
-  const sheetH = resolve('sheetH', Math.max(sw, sh), '依板材選擇');
+  const sheetW = resolve('sheetW', Math.min(sw, sh), '跟著板材選單');
+  const sheetH = resolve('sheetH', Math.max(sw, sh), '跟著板材選單');
   const partGap = resolve('partGap', laser ? 3 : Math.max(6, Math.ceil(bitDia * 2 + 2)), laser ? '雷射零件間距 3mm' : '銑刀直徑 × 2 + 2',
-    [['min', laser ? Math.max(1, kerf * 4) : bitDia + 1, laser ? '至少留 4 倍切縫，避免燒焦相連' : '必須大於銑刀直徑']]);
+    [['min', laser ? Math.max(1, kerf * 4) : bitDia + 1, laser ? '太近會燒在一起，至少留 4 倍切縫' : '必須大於銑刀直徑']]);
 
   const holeClearance = resolve('holeClearance', clampNum(Math.round(D * 0.03 * 2) / 2, 1, 3), '罐徑 × 3%');
   // 罐子左右的間隙＝手指伸進去捏住罐子的空間（最外側罐子到側板也一樣）；只影響寬度，不影響深度
   const FINGER = 20;
-  const canGap = resolve('canGap', FINGER, `預設 ${FINGER}mm，大人手指捏得住罐子；最外側到側板也留同樣空間`,
-    [['min', holeClearance + 2, '罐孔之間至少要留 2mm 木料']]);
-  if (canGap < 14) warnings.push(`罐子左右只有 ${canGap}mm，手指可能伸不進去捏罐子；建議 18mm 以上`);
+  const canGap = resolve('canGap', FINGER, `${FINGER}mm 大約一根手指寬，罐子兩邊都捏得到`,
+    [['min', holeClearance + 2, '孔跟孔之間至少要剩 2mm 木頭']]);
+  if (canGap < 14) warnings.push(`罐子之間只有 ${canGap}mm，手指可能塞不進去，建議 18mm 以上`);
   // 罐孔前後的木料（深度方向），與手指空間無關
   const depthGap = Math.max(6, Math.ceil(holeClearance + 4), Math.ceil(t * 0.6));
 
   const minRetain = r2(t + tol + 3);
   const retainHeight = resolve('retainHeight', clampNum(Math.round(h * 0.35), minRetain, h * 0.6), '罐高 × 35%',
-    [['max', r1(h * 0.8), '不超過罐高 80%，否則難以取放'], ['min', minRetain, '孔板要高於層板：板厚 + 公差 + 3']]);
-  if (minRetain > h * 0.8) warnings.push(`罐子太矮（${h}mm），以 ${t}mm 板厚很難固定；建議改用較薄板材`);
+    [['max', r1(h * 0.8), '超過罐高 80% 就不好拿了'], ['min', minRetain, '孔板至少要比層板高出板厚 + 公差 + 3mm']]);
+  if (minRetain > h * 0.8) warnings.push(`${h}mm 的罐子太矮，${t}mm 的板很難卡住，換薄一點的板比較好`);
 
   // 顏料名牌板：預設蓋住層板與孔板前緣（頂端比孔板低 2mm，不影響取罐）；最高到罐頂（再高只會遮住罐子）
   const labelH = raw.labelsOn ? r2(clampNum(raw.labelH ?? t + retainHeight - 2, 6, t + h)) : 0;
-  if (raw.labelsOn && raw.labelH > t + h + 1e-6) warnings.push(`顏料名牌最高 ${r2(t + h)}mm（到罐頂，再高只會遮住罐子）`);
+  if (raw.labelsOn && raw.labelH > t + h + 1e-6) warnings.push(`顏料名牌最高只到罐頂（${r2(t + h)}mm），再高就擋住罐子了`);
   // 取罐要提起的高度：先越過孔板；名牌高過孔板時，還要越過名牌才拿得出來
   const labelLift = raw.labelsOn ? labelH - t + 2 : 0; // 名牌頂端距層板頂面 + 2mm
   const lift = Math.max(retainHeight, labelLift);
@@ -189,21 +189,21 @@ export function resolveParams(input = {}) {
   const minTopGap = r2(lift + liftRoom);
   const byLabel = labelLift > retainHeight;
   const topGap = resolve('topGap', minTopGap,
-    byLabel ? `名牌高過孔板：罐子要提過名牌（${r2(lift)}）+ ${liftRoom}，已自動加大` : `最小值：固定孔板高度 + ${liftRoom}，罐子提得起、好拿`,
+    byLabel ? `名牌比孔板高，罐子要先提過名牌，所以自動加高了` : `罐子提過孔板後再多 ${liftRoom}mm，比較好拿`,
     [['min', minTopGap, byLabel
-      ? `至少 ${minTopGap}mm：罐子要提過顏料名牌（${r2(lift)}）+ ${liftRoom} 才拿得出來`
-      : `至少 ${minTopGap}mm（固定孔板高度 ${retainHeight} + ${liftRoom}），罐子才好拿出來`]]);
+      ? `至少 ${minTopGap}mm，不然罐子提不過名牌`
+      : `至少 ${minTopGap}mm，不然罐子提不出孔板`]]);
 
   const bolt = Number(raw.bolt.slice(1));
   const boltHole = bolt + 0.5;
-  const margin = resolve('margin', Math.max(18, Math.round(t * 1.5 + 10), Math.ceil(14 + boltHole * 1.5)), '依板厚與螺栓',
-    [['min', Math.max(14, Math.ceil(t + 6), Math.ceil(12 + boltHole)), '要容納延伸卡扣與連接板螺栓']]);
+  const margin = resolve('margin', Math.max(18, Math.round(t * 1.5 + 10), Math.ceil(14 + boltHole * 1.5)), '看板厚和螺栓大小',
+    [['min', Math.max(14, Math.ceil(t + 6), Math.ceil(12 + boltHole)), '卡扣和連接板的螺栓在這一段']]);
 
   // 罐子到側板：要讓出貼在側板內側的垂直連接板與卡扣腳（接縫處仍是完整的罐位）
   const clipLegW = Math.max(6, t);
   const minSide = Math.ceil(Math.max(t, clipLegW) + 3);
-  const sideClear = resolve('sideClear', Math.max(canGap, minSide), '讓出連接板與卡扣的位置',
-    [['min', minSide, '側板內側要放垂直連接板與卡扣腳']]);
+  const sideClear = resolve('sideClear', Math.max(canGap, minSide), '側板內側要放連接板和卡扣',
+    [['min', minSide, '再小就放不下連接板和卡扣腳']]);
 
   // 深度需同時放得下罐孔與延伸接頭
   const pitch = D + canGap;
@@ -212,8 +212,8 @@ export function resolveParams(input = {}) {
   const needDepth = Math.max(60, Math.ceil(2 * t + 10 + slotW + t + 4 * boltHole + 8));
   const minFrontJoint = Math.max(0, Math.ceil(needDepth - baseDepth));
   const minFront = minFrontJoint;
-  const frontMargin = resolve('frontMargin', Math.max(10, minFront), minFront <= 10 ? '預設 10mm' : '加深以容納垂直連接板',
-    [['min', minFront, `深度至少 ${needDepth.toFixed(0)}mm 才放得下垂直連接板`]]);
+  const frontMargin = resolve('frontMargin', Math.max(10, minFront), minFront <= 10 ? '預設 10mm' : '加深一點，放連接板用',
+    [['min', minFront, `深度不到 ${needDepth.toFixed(0)}mm 放不下連接板`]]);
 
   // 模組大小：自動時限制單一模組約 600mm 以內，並且一定要放得進板材
   const rowPitch = t + h + topGap;
@@ -222,7 +222,7 @@ export function resolveParams(input = {}) {
   const rowsFor = (len) => Math.floor(len / rowPitch); // 模組側板高 = 列數 × 列距（接縫處是完整罐位）
   const capCols = Math.max(1, colsFor(usableLong));
   const capRows = Math.max(1, rowsFor(usableLong));
-  if (colsFor(usableLong) < 1 || rowsFor(usableLong) < 1) warnings.push('板材太小，連單一罐位的模組都放不下');
+  if (colsFor(usableLong) < 1 || rowsFor(usableLong) < 1) warnings.push('板材太小，一格罐位都排不下');
   const maxCols = resolve('maxCols', Math.max(1, Math.min(raw.perKind, colsFor(Math.min(600, usableShort)))), '模組寬約 600mm 內',
     [['max', capCols, '模組不能比板材寬']]);
   const maxRows = resolve('maxRows', Math.max(1, Math.min(raw.kinds, rowsFor(Math.min(600, usableLong)))), '模組高約 600mm 內',
@@ -302,7 +302,7 @@ export function deriveLayout(input) {
   const boltR = P.lockHoleDia / 2;
   const spliceUp = e - 3; // 接縫以上（上一個模組的底部邊距）
   const spliceDown = Math.max(2 * boltR + 6, Math.min(e - 3, topRoom - 2)); // 接縫以下（避開最上一列孔板）
-  if (topRoom - 2 < 2 * boltR + 6) warnings.push('罐子太矮或孔板太高：接縫下方放不下垂直連接板的螺栓，請加大罐頂到上層距離');
+  if (topRoom - 2 < 2 * boltR + 6) warnings.push('接縫下面塞不下連接板的螺栓，把「罐頂到上層距離」調大一點');
   const boltDz = Math.max(boltR + 2, Math.min((spliceZ[1] - spliceZ[0]) / 2 - boltR - 3, 15));
   const spliceBoltZ = [spliceMid - boltDz, spliceMid + boltDz];
   const spliceBoltUp = e / 2;
@@ -760,8 +760,8 @@ export function buildRack(input, mounts = [], options = {}) {
 
   const signs = [np, ...labelShapes.values()].filter(Boolean);
   const islands = signs.reduce((n, s) => n + s.islands, 0), tiny = signs.reduce((n, s) => n + s.tiny, 0);
-  if (islands) warnings.push(`名牌鏤空：${islands} 個封閉內島（例如「口」「O」的中間）會掉出，已略過`);
-  if (tiny) warnings.push(`名牌鏤空：${tiny} 個細節小於銑刀直徑 ${Math.max(1, P.bitDia)}mm，已略過`);
+  if (islands) warnings.push(`鏤空時「口」「O」這種字中間會掉出來，有 ${islands} 處沒切（內島）`);
+  if (tiny) warnings.push(`有 ${tiny} 處比 ${Math.max(1, P.bitDia)}mm 的刀還細，鏤空時沒切`);
   const nz = L.spliceMid - t / 2; // 頂端名牌位於深度中間（前後卡扣之間）
   const npSlots = np ? np.tabs.map((xc) => ({
     type: 'poly', pts: rectCW(xc - np.tabL / 2 - L.tol / 2, nz - L.tol / 2, xc + np.tabL / 2 + L.tol / 2, nz + t + L.tol / 2),
@@ -873,10 +873,10 @@ export function buildRack(input, mounts = [], options = {}) {
   const hJoints = (L.mx - 1) * L.my, vJoints = L.mx * L.my;
   const boltLen = (n) => Math.ceil((n * t + P.bolt * 1.5 + 4) / 5) * 5;
   const hardware = [
-    { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '水平鎖點（穿過相鄰兩片側板）', qty: hJoints * L.rows },
-    { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '垂直連接板（側板 + 連接板，含頂蓋）', qty: vJoints * 2 * 4 },
-    { name: `M${P.bolt} 螺帽 + 墊片`, use: '每支螺栓一組', qty: hJoints * L.rows + vJoints * 8 },
-    { name: `${P.screw}mm 木螺絲`, use: '牆面掛點（螺絲頭需凸出牆面約 2 個板厚）', qty: mountInfo.filter((m) => m.valid).length },
+    { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '鎖住左右相鄰的兩片側板', qty: hJoints * L.rows },
+    { name: `M${P.bolt} 螺栓 × ${boltLen(2)}mm`, use: '上下模組的連接板（頂蓋也算）', qty: vJoints * 2 * 4 },
+    { name: `M${P.bolt} 螺帽 + 墊片`, use: '一支螺栓配一組', qty: hJoints * L.rows + vJoints * 8 },
+    { name: `${P.screw}mm 木螺絲`, use: '掛牆用，螺絲頭留在牆外約 2 個板厚', qty: mountInfo.filter((m) => m.valid).length },
   ].filter((h) => h.qty > 0);
 
   return {

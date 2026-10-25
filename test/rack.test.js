@@ -158,7 +158,7 @@ test('衝突的手動值會被調整並附上原因', () => {
   const r = resolveParams({ ...DEFAULTS, retainHeight: 2, canGap: 0, partGap: 1 });
   assert.equal(r.fields.retainHeight.adjusted, true);
   assert.equal(r.P.retainHeight, 9 + 0.2 + 3);
-  assert.match(r.fields.retainHeight.note, /已調為/);
+  assert.match(r.fields.retainHeight.note, /改成/);
   assert.ok(r.P.canGap >= r.P.holeClearance + 2);
   assert.ok(r.P.partGap > r.P.bitDia);
 });

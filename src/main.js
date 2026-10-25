@@ -581,14 +581,14 @@ function updateHint() {
   let html;
   if (state.selectedSign) {
     const lab = state.selectedSign.key !== 'top';
-    html = `<b>${lab ? '顏料名牌 · 全部連動' : '頂端名牌'}</b>` + (coarsePointer ? '拖控制球或用下方面板調整' : '拖控制球或用下方面板調整 · 雙擊還原 · Esc 取消');
+    html = `<b>${lab ? '顏料名牌 · 全部連動' : '頂端名牌'}</b>` + (coarsePointer ? '拖球或用下面的面板調' : '拖球或用下面的面板調 · 雙擊還原 · Esc 取消');
   } else if (state.selectedGap) {
-    html = '<b>手指空間</b>罐子左右與最外側到側板的間隙，一起調整';
+    html = '<b>手指空間</b>罐子之間和靠側板的空隙會一起變';
   } else if (state.selected != null) {
-    html = `<b>掛點 #${state.selected}</b>` + (coarsePointer ? '按住拖拉，或用下方面板微調' : '拖拉或用下方面板微調 · Delete 刪除 · Esc 取消');
+    html = `<b>掛點 #${state.selected}</b>` + (coarsePointer ? '按住拖，或用下面的面板微調' : '拖拉或用下面的面板微調 · Delete 刪除 · Esc 取消');
   } else {
     const signs = (rack?.parts.some(isSign) ? ' · 點名牌調整' : '') + ' · 點罐子調手指空間';
-    html = (coarsePointer ? '單指旋轉 · 雙指縮放 · 點掛點選取後再拖' : '拖拉掛點移動 · 雙擊背板新增掛點') + signs;
+    html = (coarsePointer ? '單指轉、雙指縮放，掛點先點一下再拖' : '拖掛點移動 · 雙擊背板加掛點') + signs;
   }
   if (html === lastHint) return;
   lastHint = html;
@@ -617,10 +617,10 @@ function renderInspector() {
     el.innerHTML = `<div class="insp-head"><b>${key === 'top' ? '頂端名牌' : '顏料名牌'}</b>${key === 'top' ? '' : '<span>全部一起調整</span>'}
         <button class="primary" data-insp-act="done">完成</button></div>
       <div class="seg insp-align">${['left', 'center', 'right'].map((a) => `<button data-align="${a}" aria-pressed="${s.align === a}">${alignText[a]}</button>`).join('')}</div>
-      ${nudgeRow('offset', offLabel, fmtInput(s.offset), 'mm', s.maxOffset - s.minOffset < 0.5 ? '<small>滿寬時無法移動</small>' : '')}
+      ${nudgeRow('offset', offLabel, fmtInput(s.offset), 'mm', s.maxOffset - s.minOffset < 0.5 ? '<small>滿寬時不能左右移</small>' : '')}
       ${nudgeRow('width', '寬度', fmtInput(s.width), 'mm', `<button class="ghost" data-insp-act="full">滿寬</button>`)}
-      ${nudgeRow('height', key === 'top' ? '高出頂蓋' : '名牌高度', fmtInput(signHeight(part)), 'mm', key === 'top' ? '' : `<small>${rack.layout.fields.topGap?.note?.includes('名牌') ? '名牌高過孔板，罐頂距離已自動加大，罐子才提得過名牌' : '低於孔板時不影響其他零件'}；最高 ${fmt(rack.info.labelHMax)} mm（到罐頂）</small>`)}
-      ${key === 'top' ? '' : '<p class="hint">名牌板兩端插進左右側板前緣的開口槽，從正面推進去、隨時可拔出；左右／寬度調整的是文字區。</p>'}
+      ${nudgeRow('height', key === 'top' ? '高出頂蓋' : '名牌高度', fmtInput(signHeight(part)), 'mm', key === 'top' ? '' : `<small>${rack.layout.fields.topGap?.note?.includes('名牌') ? '名牌比孔板高，上層已經自動加高' : '沒超過孔板就不會動到別的零件'}。最高到罐頂 ${fmt(rack.info.labelHMax)} mm</small>`)}
+      ${key === 'top' ? '' : '<p class="hint">名牌從正面插進側板的槽，要換直接拔出來。左右和寬度調的是字的位置。</p>'}
       <div class="row-buttons"><button class="ghost" data-insp-act="reset">還原滿寬置中</button></div>`;
     el.hidden = false;
     el.dataset.kind = 'sign';
@@ -628,7 +628,7 @@ function renderInspector() {
     const f = rack.layout.fields.canGap;
     el.innerHTML = `<div class="insp-head"><b>手指空間</b><span>${f.auto ? '自動' : '手動'}</span>
         <button class="primary" data-insp-act="done">完成</button></div>
-      ${nudgeRow('gap', '罐子左右', fmtInput(f.value), 'mm', `<small>相鄰罐子之間、最外側罐子到側板都留這個寬度，手指才伸得進去捏住罐子。木架寬度會跟著變，深度不變。${f.adjusted ? `<br>${f.note}` : ''}</small>`)}
+      ${nudgeRow('gap', '罐子左右', fmtInput(f.value), 'mm', `<small>罐子之間、罐子到側板都留這麼寬。調大架子會變寬，深度不變。${f.adjusted ? `<br>${f.note}` : ''}</small>`)}
       <div class="row-buttons">${[16, 20, 25].map((v) => `<button data-gap-preset="${v}">${v}</button>`).join('')}
         ${f.auto ? '' : '<button class="ghost" data-insp-act="gap-auto">改回自動</button>'}</div>
       <p class="hint">寬度 ${fmt(rack.info.width)} mm · 每模組 ${rack.layout.cols} 罐寬</p>`;
@@ -847,7 +847,7 @@ function renderParams() {
           ${s.options.map(([v, l]) => `<option value="${v}" ${state.params[s.key] === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select></span></label>`).join('')}</div>
     <details class="group" id="advanced">
-      <summary>進階 <span class="hint">全部自動連動，輸入數值即可覆寫</span></summary>
+      <summary>進階 <span class="hint">都會自動算，想改再填</span></summary>
       <div class="param-block">${ADVANCED_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
       <button id="adv-reset" class="ghost">進階全部改回自動</button>
     </details>`;
@@ -916,7 +916,7 @@ function syncMachineUI() {
   const bit = $('param-bit');
   if (bit) {
     bit.disabled = laser;
-    bit.title = laser ? '雷射切割不需要銑刀（內角是尖的）' : '';
+    bit.title = laser ? '雷射不用銑刀' : '';
   }
 }
 
@@ -941,8 +941,8 @@ function updateFieldNotes() {
   const n = ADVANCED_SPEC.filter((s) => !fields[s.key].auto).length;
   const adj = ADVANCED_SPEC.filter((s) => fields[s.key].adjusted).length;
   $('advanced').querySelector('summary .hint').textContent = n
-    ? `${n} 項手動${adj ? `，${adj} 項因衝突已自動調整` : ''}`
-    : '全部自動連動，輸入數值即可覆寫';
+    ? `改了 ${n} 項${adj ? `，其中 ${adj} 項有衝突，自動修正過` : ''}`
+    : '都會自動算，想改再填';
 }
 
 function onParamsChanged() {
@@ -1000,7 +1000,7 @@ function countTo(el, to) {
 
 function renderMounts() {
   const L = rack.layout;
-  $('mount-list').innerHTML = state.mounts.length ? '' : '<p class="hint">尚無掛點</p>';
+  $('mount-list').innerHTML = state.mounts.length ? '' : '<p class="hint">還沒有掛點</p>';
   for (const m of state.mounts) {
     const v = validateMount(L, m.x, m.y);
     const row = document.createElement('div');
@@ -1067,12 +1067,12 @@ function renderConnectors() {
   const i = rack.info;
   const groups = partGroups((p) => p.kind === 'clip' || p.kind === 'splice');
   const desc = {
-    clip: `卡入相鄰模組側板上下緣的槽，${i.hJoints} 條水平接縫 × 每條 4 個`,
-    splice: `貼在上下模組側板內側，每片 4 支螺栓，${i.vJoints} 條垂直接縫 × 左右 2 片`,
+    clip: `卡進左右兩個模組側板上下的槽，一條接縫 4 個，共 ${i.hJoints} 條`,
+    splice: `貼在上下兩個模組的側板內側，一片鎖 4 支螺栓，一條接縫左右各 1 片，共 ${i.vJoints} 條`,
   };
   const total = i.mx * i.my;
   $('connectors').innerHTML = `<h2>連接點</h2>
-    <p class="hint">${total} 個模組（${i.mx} × ${i.my}）${i.hJoints + i.vJoints ? `，${i.hJoints} 條水平接縫、${i.vJoints} 條垂直接縫` : '，目前不需要連接件'}。</p>
+    <p class="hint">${total} 個模組（${i.mx} × ${i.my}）${i.hJoints + i.vJoints ? `，${i.hJoints} 條水平接縫、${i.vJoints} 條垂直接縫` : '，不用連接件'}。</p>
     ${groups.length ? `<div class="thumb-list">${groups.map((g) => thumbRow(g, `${desc[g.part.kind]}<br>${g.part.bounds.w.toFixed(1)} × ${g.part.bounds.h.toFixed(1)} × ${g.part.t} mm`)).join('')}</div>` : ''}
     ${hardwareTable()}`;
 }
@@ -1099,11 +1099,11 @@ function renderBOM() {
       const kh = g.part.holes.filter((h) => h.mount != null).length;
       return thumbRow(g, `${g.part.bounds.w.toFixed(1)} × ${g.part.bounds.h.toFixed(1)} × ${g.part.t} mm${g.part.kind === 'back' ? ` · 掛孔 ${kh} 個` : ''}`);
     }).join('')}</div>
-    <h3>五金</h3>${hardwareTable() || '<p class="hint">不需要五金。</p>'}
+    <h3>五金</h3>${hardwareTable() || '<p class="hint">不用五金。</p>'}
     <h3>排版 · ${layout.sheets.length} 張 ${P.sheetW}×${P.sheetH}（板材利用率約 ${(fill * 100).toFixed(0)}%）</h3>
     <div class="sheets">${layout.sheets.map((sh, k) => `<div class="sheet-card">${sheetThumb(sh)}第 ${k + 1} 張 · ${sh.items.length} 件</div>`).join('')}</div>
     <a class="button calc-link" href="${link}" target="_blank" rel="noopener">到板材計算機：從原板裁出 ${layout.sheets.length} 張 ${P.sheetW}×${P.sheetH} ↗</a>
-    <p class="hint" style="margin-top:6px">把 CNC 用的板材尺寸、張數和板厚帶到板材計算機，算出要買幾張原板與裁切方式。</p>`;
+    <p class="hint" style="margin-top:6px">把板材尺寸、張數和厚度帶過去，算要買幾張原板、怎麼裁。</p>`;
 }
 
 // 游標旁的零件資訊
@@ -1442,7 +1442,7 @@ async function download(name, data) {
       await cap.save({ filename: name, data });
       showExportMsg(`已存檔：${name}`);
     } catch (err) {
-      if (err?.code !== 'declined') showExportMsg(`無法存檔（${err?.code || err}）`, true);
+      if (err?.code !== 'declined') showExportMsg(`存檔失敗（${err?.code || err}）`, true);
     }
     return;
   }
@@ -1493,7 +1493,7 @@ $('import-json').onchange = async (e) => {
     firstBuild = true;
     rebuild();
   } catch (err) {
-    showExportMsg('無法讀取 JSON：' + err.message, true);
+    showExportMsg('這個 JSON 讀不了：' + err.message, true);
   }
   e.target.value = '';
 };
@@ -1546,7 +1546,7 @@ function renderNameplate() {
   const np = state.nameplate, lb = state.labels;
   const opts = (list, cur) => list.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('');
   $('nameplate').innerHTML = `
-    <p class="hint">在 3D 點名牌（或清單的色點）：拖球或用畫面下方的面板，選靠左／置中／靠右再調距離、寬度、高度。</p>
+    <p class="hint">在 3D 點一下名牌（或清單裡的色點），就能拖球或用下面的面板調位置和大小。</p>
     <div class="card">
       <label class="card-head"><span>頂端名牌</span><input type="checkbox" class="switch" id="np-enabled" ${np.enabled ? 'checked' : ''}/></label>
       <div id="np-body" ${np.enabled ? '' : 'hidden'}>
@@ -1569,7 +1569,7 @@ function renderNameplate() {
       </div>
     </div>
     <div class="card">
-      <label class="card-head"><span>顏料名牌 <small>每種一片，插在左右側板前緣、可隨時拔出；不影響放罐子的板材</small></span><input type="checkbox" class="switch" id="lb-enabled" ${lb.enabled ? 'checked' : ''}/></label>
+      <label class="card-head"><span>顏料名牌 <small>每種顏料一片，從正面插在側板上，隨時拔得起來</small></span><input type="checkbox" class="switch" id="lb-enabled" ${lb.enabled ? 'checked' : ''}/></label>
       <div id="lb-body" ${lb.enabled ? '' : 'hidden'}>
         <div class="pair">
           <label class="mini"><span>加工</span><select id="lb-mode">${opts(NAMEPLATE_MODES, lb.mode)}</select></label>
@@ -1626,7 +1626,7 @@ function renderNameplate() {
       $('np-clear').hidden = false;
       artChanged();
     } catch (err) {
-      $('np-status').textContent = `無法讀取圖片：${err.message}`;
+      $('np-status').textContent = `這張圖讀不了：${err.message}`;
     }
   };
 }
@@ -1680,8 +1680,8 @@ function renderLabelStatus() {
   }
   const n = rack.info.labelCount;
   const on = Array.from({ length: kindsCount() }, (_, k) => labelOn(k)).filter(Boolean).length;
-  const what = { laser: '雷射點陣（每片各一張 PNG）', engrave: '向量輪廓在 ENGRAVE 圖層', cut: '文字直接貫穿切出' }[state.labels.mode];
-  el.textContent = state.labels.enabled ? `${on} / ${kindsCount()} 種開啟 · 共 ${n} 片（跨模組的顏料每段各一片）· ${what}` : '';
+  const what = { laser: '雷射雕刻，每片附一張 PNG', engrave: 'CNC 雕刻，輪廓在 ENGRAVE 圖層', cut: '字直接切穿' }[state.labels.mode];
+  el.textContent = state.labels.enabled ? `開了 ${on}/${kindsCount()} 種，共 ${n} 片。${what}` : '';
 }
 
 function renderNameplateStatus() {
@@ -1691,7 +1691,7 @@ function renderNameplateStatus() {
   const ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, cv.width, cv.height);
   if (artwork.error || artwork.empty) {
-    status.textContent = artwork.error ? `圖案處理失敗：${artwork.error}` : '圖案是空白的：調整黑白門檻或勾選反轉。';
+    status.textContent = artwork.error ? `圖案處理失敗：${artwork.error}` : '圖案是空的，調一下黑白門檻，或勾反轉看看。';
     status.className = 'hint warn';
     return;
   }
@@ -1702,10 +1702,10 @@ function renderNameplateStatus() {
   const loops = artwork.art.loops.length;
   const np = rack?.parts.find((p) => p.kind === 'nameplate');
   const dpiVal = np?.artRect && artwork.laserPx ? Math.round(artwork.laserPx[0] / (np.artRect.w / 25.4)) : 0;
-  const dpi = dpiVal ? ` · 雷射約 ${dpiVal} DPI${dpiVal < 120 ? '（偏低，建議匯入更大的圖片）' : ''}` : '';
-  const size = np?.artRect ? `圖案 ${fmt(np.artRect.w)} × ${fmt(np.artRect.h)} mm${dpi} · ` : '';
-  const what = { laser: '雷射點陣（SVG 內嵌 + PNG），DXF 另附向量輪廓', engrave: '向量輪廓在 ENGRAVE 圖層，CAM 以 V 刀或平刀挖槽', cut: '圖案外框直接貫穿切出' }[state.nameplate.mode];
-  status.textContent = `${size}${loops} 條輪廓 · ${what}`;
+  const dpi = dpiVal ? `，雷射約 ${dpiVal} DPI${dpiVal < 120 ? '（有點低，換張大一點的圖會比較清楚）' : ''}` : '';
+  const size = np?.artRect ? `圖案 ${fmt(np.artRect.w)} × ${fmt(np.artRect.h)} mm${dpi}。` : '';
+  const what = { laser: '雷射點陣放在 SVG 裡，另附 PNG，DXF 只有輪廓', engrave: '輪廓在 ENGRAVE 圖層，CAM 用 V 刀或平刀挖', cut: '圖案外框直接切穿' }[state.nameplate.mode];
+  status.textContent = `${size}${loops} 條輪廓，${what}。`;
   status.className = 'hint';
 }
 
