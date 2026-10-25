@@ -63,6 +63,7 @@ export const CHOICE_SPEC = [
 
 // 放在基本區、但可自動連動的欄位（空白 = 自動）
 export const LINKED_BASIC_SPEC = [
+  { key: 'canGap', label: '罐子左右手指空間', unit: 'mm', min: 0, max: 60, step: 1 },
   { key: 'topGap', label: '罐頂到上層距離', unit: 'mm', min: 0, max: 300, step: 1 },
 ];
 
@@ -72,7 +73,6 @@ export const ASSEMBLY_SPEC = [
 ];
 
 export const ADVANCED_SPEC = [
-  { key: 'canGap', label: '罐間距', unit: 'mm', min: 0, max: 40, step: 0.5 },
   { key: 'holeClearance', label: '罐孔餘隙', unit: 'mm', min: 0, max: 10, step: 0.1 },
   { key: 'sideClear', label: '罐子到側板間距', unit: 'mm', min: 0, max: 60, step: 0.5 },
   { key: 'retainHeight', label: '固定孔板高度', unit: 'mm', min: 0, max: 200, step: 1 },
@@ -165,8 +165,13 @@ export function resolveParams(input = {}) {
     [['min', laser ? Math.max(1, kerf * 4) : bitDia + 1, laser ? '至少留 4 倍切縫，避免燒焦相連' : '必須大於銑刀直徑']]);
 
   const holeClearance = resolve('holeClearance', clampNum(Math.round(D * 0.03 * 2) / 2, 1, 3), '罐徑 × 3%');
-  const canGap = resolve('canGap', Math.max(6, Math.ceil(holeClearance + 4), Math.ceil(t * 0.6)), '依餘隙與板厚',
+  // 罐子左右的間隙＝手指伸進去捏住罐子的空間（最外側罐子到側板也一樣）；只影響寬度，不影響深度
+  const FINGER = 20;
+  const canGap = resolve('canGap', FINGER, `預設 ${FINGER}mm，大人手指捏得住罐子；最外側到側板也留同樣空間`,
     [['min', holeClearance + 2, '罐孔之間至少要留 2mm 木料']]);
+  if (canGap < 14) warnings.push(`罐子左右只有 ${canGap}mm，手指可能伸不進去捏罐子；建議 18mm 以上`);
+  // 罐孔前後的木料（深度方向），與手指空間無關
+  const depthGap = Math.max(6, Math.ceil(holeClearance + 4), Math.ceil(t * 0.6));
 
   const minRetain = r2(t + tol + 3);
   const retainHeight = resolve('retainHeight', clampNum(Math.round(h * 0.35), minRetain, h * 0.6), '罐高 × 35%',
@@ -202,7 +207,7 @@ export function resolveParams(input = {}) {
 
   // 深度需同時放得下罐孔與延伸接頭
   const pitch = D + canGap;
-  const baseDepth = 2 * t + canGap / 2 + pitch;
+  const baseDepth = 2 * t + 1.5 * depthGap + D;
   // 連接板位於前後兩個卡扣之間，至少要放得下兩排螺栓孔
   const needDepth = Math.max(60, Math.ceil(2 * t + 10 + slotW + t + 4 * boltHole + 8));
   const minFrontJoint = Math.max(0, Math.ceil(needDepth - baseDepth));
@@ -230,7 +235,7 @@ export function resolveParams(input = {}) {
 
   const P = {
     thickness: t, tolerance: tol, canDia: D, canHeight: h, kinds: raw.kinds, perKind: raw.perKind,
-    canGap, holeClearance, retainHeight, topGap, sideClear, frontMargin, margin, maxCols, maxRows, labelsOn: raw.labelsOn, labelH,
+    canGap, depthGap, holeClearance, retainHeight, topGap, sideClear, frontMargin, margin, maxCols, maxRows, labelsOn: raw.labelsOn, labelH,
     racksX: raw.racksX, racksY: raw.racksY, bolt, lockHoleDia: boltHole, screw,
     keyholeHead, keyholeShank: r1(screw + 0.6), keyholeLen: keyholeHead,
     machine: raw.machine, kerf, dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap, gridSnap,
@@ -258,8 +263,9 @@ export function deriveLayout(input) {
 
   const inset = t; // 背板離牆距離（側板後緣貼牆）
   const zs = inset + t; // 層板後緣
-  const holeZ = zs + gap / 2 + pitch / 2;
-  const depth = holeZ + pitch / 2 + P.frontMargin;
+  const dg = P.depthGap; // 罐孔前後留的木料（左右的手指空間不會讓木架變深）
+  const holeZ = zs + dg + P.canDia / 2;
+  const depth = holeZ + P.canDia / 2 + dg / 2 + P.frontMargin;
   const retain = P.retainHeight;
 
   const rowPitch = t + P.canHeight + P.topGap;

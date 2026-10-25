@@ -31,6 +31,7 @@ const state = {
   // height = 名牌板高度（空白 = 蓋住層板與孔板前緣；只影響名牌），align / offset / width = 文字區位置
   labels: { enabled: false, mode: 'laser', height: null, width: null, align: 'center', offset: 0, items: [] },
   selectedSign: null, // { key: 'top' | 顏料編號, module }：正在調整的名牌
+  selectedGap: false, // 點了罐子：調整罐子左右的手指空間
 };
 
 // 名牌圖案處理結果（由 updateArtwork 產生）：'top' 為頂端名牌，'label:k' 為第 k 種顏料
@@ -194,6 +195,7 @@ function rebuild(light = false) {
     m.scale.set(c.r, c.h, c.r);
     m.position.set(c.x, c.y + c.h / 2, c.z);
     m.castShadow = true;
+    m.userData.can = c;
     cansGroup.add(m);
   }
   cansGroup.visible = state.showCans;
@@ -319,6 +321,7 @@ function selectedSignPart() {
 
 function selectSign(part) {
   state.selected = null;
+  state.selectedGap = false;
   state.selectedSign = { key: signKey(part), module: part.module.join(',') };
   buildMountSpheres();
   buildSignHandles();
@@ -339,6 +342,7 @@ function markLabelRow() {
 function clearSelection() {
   state.selected = null;
   state.selectedSign = null;
+  state.selectedGap = false;
   disposeGroup(handlesGroup);
   buildMountSpheres();
   updateOverlay();
@@ -523,6 +527,28 @@ function endDrag() {
 }
 
 /** 名牌還原：滿寬、置中 */
+/** 點罐子：用面板調整罐子左右的手指空間 */
+function selectGap() {
+  state.selected = null;
+  state.selectedSign = null;
+  state.selectedGap = true;
+  disposeGroup(handlesGroup);
+  buildMountSpheres();
+  updateOverlay();
+  renderMounts();
+  updateHint();
+  markLabelRow();
+  renderInspector();
+}
+
+/** 手指空間：null = 自動（預設值） */
+function setCanGap(v) {
+  state.params.canGap = v;
+  const input = $('param-canGap');
+  if (input) input.value = v ?? '';
+  onParamsChanged();
+}
+
 function resetSign(key) {
   const cfg = signCfg(key);
   Object.assign(cfg, { width: null, align: 'center', offset: 0 });
@@ -532,6 +558,7 @@ function resetSign(key) {
 
 function selectMount(id) {
   state.selectedSign = null;
+  state.selectedGap = false;
   disposeGroup(handlesGroup);
   state.selected = id;
   for (const s of mountsGroup.children) {
@@ -555,10 +582,12 @@ function updateHint() {
   if (state.selectedSign) {
     const lab = state.selectedSign.key !== 'top';
     html = `<b>${lab ? '顏料名牌 · 全部連動' : '頂端名牌'}</b>` + (coarsePointer ? '拖控制球或用下方面板調整' : '拖控制球或用下方面板調整 · 雙擊還原 · Esc 取消');
+  } else if (state.selectedGap) {
+    html = '<b>手指空間</b>罐子左右與最外側到側板的間隙，一起調整';
   } else if (state.selected != null) {
     html = `<b>掛點 #${state.selected}</b>` + (coarsePointer ? '按住拖拉，或用下方面板微調' : '拖拉或用下方面板微調 · Delete 刪除 · Esc 取消');
   } else {
-    const signs = rack?.parts.some(isSign) ? ' · 點名牌調整' : '';
+    const signs = (rack?.parts.some(isSign) ? ' · 點名牌調整' : '') + ' · 點罐子調手指空間';
     html = (coarsePointer ? '單指旋轉 · 雙指縮放 · 點掛點選取後再拖' : '拖拉掛點移動 · 雙擊背板新增掛點') + signs;
   }
   if (html === lastHint) return;
@@ -566,7 +595,7 @@ function updateHint() {
   el.innerHTML = html;
   el.classList.remove('fade');
   clearTimeout(hintTimer);
-  if (!state.selectedSign && state.selected == null) hintTimer = setTimeout(() => el.classList.add('fade'), 6000);
+  if (!state.selectedSign && state.selected == null && !state.selectedGap) hintTimer = setTimeout(() => el.classList.add('fade'), 6000);
 }
 
 // ---------- 選取面板：精確調整（手機也好操作） ----------
@@ -595,6 +624,16 @@ function renderInspector() {
       <div class="row-buttons"><button class="ghost" data-insp-act="reset">還原滿寬置中</button></div>`;
     el.hidden = false;
     el.dataset.kind = 'sign';
+  } else if (state.selectedGap && state.explode === 0) {
+    const f = rack.layout.fields.canGap;
+    el.innerHTML = `<div class="insp-head"><b>手指空間</b><span>${f.auto ? '自動' : '手動'}</span>
+        <button class="primary" data-insp-act="done">完成</button></div>
+      ${nudgeRow('gap', '罐子左右', fmtInput(f.value), 'mm', `<small>相鄰罐子之間、最外側罐子到側板都留這個寬度，手指才伸得進去捏住罐子。木架寬度會跟著變，深度不變。${f.adjusted ? `<br>${f.note}` : ''}</small>`)}
+      <div class="row-buttons">${[16, 20, 25].map((v) => `<button data-gap-preset="${v}">${v}</button>`).join('')}
+        ${f.auto ? '' : '<button class="ghost" data-insp-act="gap-auto">改回自動</button>'}</div>
+      <p class="hint">寬度 ${fmt(rack.info.width)} mm · 每模組 ${rack.layout.cols} 罐寬</p>`;
+    el.hidden = false;
+    el.dataset.kind = 'gap';
   } else if (m) {
     el.innerHTML = `<div class="insp-head"><b>掛點 #${m.id}</b><button class="primary" data-insp-act="done">完成</button></div>
       ${nudgeRow('mx', 'X（離左）', fmtInput(m.x), 'mm')}
@@ -616,7 +655,9 @@ function applyInspector(key, value) {
   if (!Number.isFinite(value)) return;
   const part = selectedSignPart();
   const m = state.mounts.find((q) => q.id === state.selected);
-  if (part) {
+  if (state.selectedGap) {
+    setCanGap(Math.min(60, Math.max(0, Math.round(value))));
+  } else if (part) {
     const k = signKey(part), cfg = signCfg(k);
     if (key === 'offset') cfg.offset = value;
     if (key === 'width') cfg.width = value >= part.span.full - 0.5 ? null : value;
@@ -634,7 +675,7 @@ function applyInspector(key, value) {
 
 {
   const el = $('inspector');
-  const steps = { offset: 5, width: 10, height: 2, mx: 5, my: 5 };
+  const steps = { offset: 5, width: 10, height: 2, mx: 5, my: 5, gap: 1 };
   el.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t) return;
@@ -651,6 +692,8 @@ function applyInspector(key, value) {
     else if (t.dataset.inspAct === 'reset' && part) resetSign(signKey(part));
 
     else if (t.dataset.inspAct === 'delete' && state.selected != null) removeMount(state.selected);
+    else if (t.dataset.gapPreset) setCanGap(Number(t.dataset.gapPreset));
+    else if (t.dataset.inspAct === 'gap-auto') setCanGap(null);
     else if (t.dataset.inspAct === 'done') clearSelection();
   });
   el.addEventListener('change', (e) => {
@@ -734,6 +777,17 @@ function updateOverlay() {
     addLine([-off - 6, L.totalH, zf], [-off + 6, L.totalH, zf], lineMats.dim);
     // 深
     addLine([L.totalW + off, 0, 0], [L.totalW + off, 0, L.sideDepth], lineMats.dim, `深 ${fmt(L.sideDepth)}`);
+  }
+
+  // 手指空間：最下一列左邊兩罐之間、最左罐到側板（避開上方的掛點標籤）
+  if ((state.showDims || state.selectedGap) && rack.cans.length) {
+    const yTop = Math.min(...rack.cans.map((c) => c.y));
+    const row = rack.cans.filter((c) => Math.abs(c.y - yTop) < 0.5).sort((a, b) => a.x - b.x);
+    const c0 = row[0], y = c0.y + c0.h * 0.6, zc = c0.z + c0.r;
+    const mat = state.selectedGap ? lineMats.dim : lineMats.edge;
+    const cls = state.selectedGap ? 'gap-tag' : 'soft';
+    addLine([L.t, y, zc], [c0.x - c0.r, y, zc], mat, fmt(L.side), cls);
+    if (row[1] && row[1].x - c0.x < L.W) addLine([c0.x + c0.r, y, zc], [row[1].x - row[1].r, y, zc], mat, `手指 ${fmt(L.gap)}`, cls);
   }
 
   // 掛點之間：最小生成樹的邊（只標示相鄰的掛點）
@@ -1114,8 +1168,10 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     return;
   }
   // 3. 名牌：放開時才選取
-  const part = raycaster.intersectObjects(partsGroup.children, true).find((q) => q.object.isMesh)?.object.userData.part;
+  const hit = raycaster.intersectObjects([...partsGroup.children, ...(cansGroup.visible ? cansGroup.children : [])], true).find((q) => q.object.isMesh);
+  const part = hit?.object.userData.part;
   if (isSign(part)) downAt.sign = part;
+  else if (hit?.object.userData.can) downAt.can = true;
 });
 
 function pointerEnd(e) {
@@ -1128,6 +1184,7 @@ function pointerEnd(e) {
   if (!tap) return;
   if (d.mount != null) selectMount(d.mount);
   else if (d.sign) selectSign(d.sign);
+  else if (d.can) selectGap();
   else if (state.selected != null || state.selectedSign) clearSelection(); // 點空白處取消選取
 }
 renderer.domElement.addEventListener('pointerup', pointerEnd);
@@ -1243,7 +1300,7 @@ $('show-dims').onchange = (e) => { state.showDims = e.target.checked; updateOver
 let explodeTarget = 0;
 $('explode').onchange = (e) => {
   explodeTarget = e.target.checked ? 1 : 0;
-  if (explodeTarget) { state.selected = null; state.selectedSign = null; disposeGroup(handlesGroup); buildMountSpheres(); updateHint(); renderInspector(); }
+  if (explodeTarget) { state.selected = null; state.selectedSign = null; state.selectedGap = false; disposeGroup(handlesGroup); buildMountSpheres(); updateHint(); renderInspector(); }
   if (reducedMotion) setExplode(explodeTarget);
 };
 function setExplode(v) {

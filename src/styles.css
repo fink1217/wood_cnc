@@ -351,3 +351,4 @@ body.sidebar-closed #inspector { left: 50%; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }
 }
+.dim-label.gap-tag { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
