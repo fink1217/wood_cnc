@@ -28,8 +28,8 @@ const state = {
   nameplate: { enabled: false, mode: 'laser', shape: 'rect', height: 60, width: null, align: 'center', offset: 0, text: 'PAINT', threshold: 128, invert: false, image: null },
   // 每種顏料各自的名牌：items[k] = { on, text, offset }，可各自關閉、各自左右移；width 空白 = 滿寬
   // 每種顏料各自的名牌：items[k] = { on, text } 各自開關；大小與位置全部連動
-  // height = 名牌高度（只影響名牌，最高到孔板下緣），align / offset = 靠左、置中、靠右與距離
-  labels: { enabled: false, mode: 'laser', height: 12, width: null, align: 'center', offset: 0, items: [] },
+  // height = 名牌板高度（空白 = 蓋住層板與孔板前緣；只影響名牌），align / offset / width = 文字區位置
+  labels: { enabled: false, mode: 'laser', height: null, width: null, align: 'center', offset: 0, items: [] },
   selectedSign: null, // { key: 'top' | 顏料編號, module }：正在調整的名牌
 };
 
@@ -473,7 +473,7 @@ function moveDrag() {
   }
   if (drag.type === 'top') {
     if (key === 'top') cfg.height = Math.round(Math.min(300, Math.max(20, v - L.e)));
-    else cfg.height = Math.round(Math.min(rack.info.labelHMax, Math.max(4, v))); // 顏料名牌：最高到孔板下緣，其他零件不動
+    else cfg.height = Math.round(Math.min(rack.info.labelHMax, Math.max(6, v))); // 顏料名牌板：高度自由，其他零件不動
   }
   renderInspector();
   rebuildSoon();
@@ -557,9 +557,8 @@ function renderInspector() {
       <div class="seg insp-align">${['left', 'center', 'right'].map((a) => `<button data-align="${a}" aria-pressed="${s.align === a}">${alignText[a]}</button>`).join('')}</div>
       ${nudgeRow('offset', offLabel, fmtInput(s.offset), 'mm', s.maxOffset - s.minOffset < 0.5 ? '<small>滿寬時無法移動</small>' : '')}
       ${nudgeRow('width', '寬度', fmtInput(s.width), 'mm', `<button class="ghost" data-insp-act="full">滿寬</button>`)}
-      ${nudgeRow('height', key === 'top' ? '高出頂蓋' : '名牌高度', fmtInput(signHeight(part)), 'mm', key === 'top' ? '' : `<small>最高 ${fmt(rack.info.labelHMax)} mm（到孔板下緣），只改名牌本身</small>`)}
-      ${key === 'top' ? '' : `<p class="hint">名牌從正面插進層板前緣的開口槽，推到底即定位，隨時可往前拔出。</p>
-        <div class="row-buttons"><button class="ghost" data-insp-act="raise">孔板加高 5 mm（名牌可再高 5 mm）</button></div>`}
+      ${nudgeRow('height', key === 'top' ? '高出頂蓋' : '名牌高度', fmtInput(signHeight(part)), 'mm', key === 'top' ? '' : `<small>只改名牌本身，最高 ${fmt(rack.info.labelHMax)} mm（不碰到上一列）</small>`)}
+      ${key === 'top' ? '' : '<p class="hint">名牌板兩端插進左右側板前緣的開口槽，從正面推進去、隨時可拔出；左右／寬度調整的是文字區。</p>'}
       <div class="row-buttons"><button class="ghost" data-insp-act="reset">還原滿寬置中</button></div>`;
     el.hidden = false;
     el.dataset.kind = 'sign';
@@ -586,7 +585,7 @@ function applyInspector(key, value) {
     const k = signKey(part), cfg = signCfg(k);
     if (key === 'offset') cfg.offset = value;
     if (key === 'width') cfg.width = value >= part.span.full - 0.5 ? null : value;
-    if (key === 'height') cfg.height = k === 'top' ? value : Math.min(rack.info.labelHMax, Math.max(4, value));
+    if (key === 'height') cfg.height = k === 'top' ? value : Math.min(rack.info.labelHMax, Math.max(6, value));
     saveState();
     rebuild();
   } else if (m) {
@@ -615,13 +614,7 @@ function applyInspector(key, value) {
       rebuild();
     } else if (t.dataset.inspAct === 'full' && part) applyInspector('width', part.span.full);
     else if (t.dataset.inspAct === 'reset' && part) resetSign(signKey(part));
-    else if (t.dataset.inspAct === 'raise') {
-      // 由使用者明確選擇：固定孔板加高（罐頂距離的下限會跟著抬高）
-      state.params.retainHeight = Math.round(rack.layout.retain + 5);
-      state.labels.height = Math.round(rack.info.labelHMax + 5);
-      renderParams();
-      onParamsChanged();
-    }
+
     else if (t.dataset.inspAct === 'delete' && state.selected != null) removeMount(state.selected);
     else if (t.dataset.inspAct === 'done') clearSelection();
   });
@@ -695,7 +688,7 @@ function updateOverlay() {
 
   if (state.showDims) {
     const off = Math.max(25, L.totalW * 0.05);
-    const zf = L.depth;
+    const zf = L.sideDepth;
     // 寬
     addLine([0, -off, zf], [L.totalW, -off, zf], lineMats.dim, `寬 ${fmt(L.totalW)}`);
     addLine([0, -off - 6, zf], [0, -off + 6, zf], lineMats.dim);
@@ -705,7 +698,7 @@ function updateOverlay() {
     addLine([-off - 6, 0, zf], [-off + 6, 0, zf], lineMats.dim);
     addLine([-off - 6, L.totalH, zf], [-off + 6, L.totalH, zf], lineMats.dim);
     // 深
-    addLine([L.totalW + off, 0, 0], [L.totalW + off, 0, L.depth], lineMats.dim, `深 ${fmt(L.depth)}`);
+    addLine([L.totalW + off, 0, 0], [L.totalW + off, 0, L.sideDepth], lineMats.dim, `深 ${fmt(L.sideDepth)}`);
   }
 
   // 掛點之間：最小生成樹的邊（只標示相鄰的掛點）
@@ -1110,9 +1103,9 @@ window.addEventListener('keydown', (e) => {
 
 function setView(kind) {
   const L = rack.layout;
-  const c = new THREE.Vector3(L.totalW / 2, L.totalH / 2, L.depth / 2);
+  const c = new THREE.Vector3(L.totalW / 2, L.totalH / 2, L.sideDepth / 2);
   // 依畫面直橫比讓整座木架放得進視野（手機直向時水平視角較窄）
-  const radius = 0.5 * Math.hypot(L.totalW, L.totalH, L.depth);
+  const radius = 0.5 * Math.hypot(L.totalW, L.totalH, L.sideDepth);
   const vfov = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * visibleFrac());
   const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
   const d = (radius / Math.sin(Math.min(vfov, hfov) / 2)) * 0.92; // 外接球偏保守，略拉近
@@ -1322,7 +1315,7 @@ function renderNameplate() {
       </div>
     </div>
     <div class="card">
-      <label class="card-head"><span>顏料名牌 <small>每種一片，從正面插進層板、可隨時拔出；大小位置全部連動</small></span><input type="checkbox" class="switch" id="lb-enabled" ${lb.enabled ? 'checked' : ''}/></label>
+      <label class="card-head"><span>顏料名牌 <small>每種一片，插在左右側板前緣、可隨時拔出；不影響放罐子的板材</small></span><input type="checkbox" class="switch" id="lb-enabled" ${lb.enabled ? 'checked' : ''}/></label>
       <div id="lb-body" ${lb.enabled ? '' : 'hidden'}>
         <div class="pair">
           <label class="mini"><span>加工</span><select id="lb-mode">${opts(NAMEPLATE_MODES, lb.mode)}</select></label>
@@ -1354,7 +1347,7 @@ function renderNameplate() {
   $('lb-all-on').onclick = () => setAll(true);
   $('lb-all-off').onclick = () => setAll(false);
   $('lb-reset').onclick = () => {
-    Object.assign(lb, { width: null, height: 12, align: 'center', offset: 0 });
+    Object.assign(lb, { width: null, height: null, align: 'center', offset: 0 });
     saveState();
     rebuild();
   };
