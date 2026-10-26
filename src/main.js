@@ -1273,8 +1273,9 @@ function setView(kind, { intro = false, instant = false } = {}) {
   const L = rack.layout;
   const c = new THREE.Vector3(L.totalW / 2, L.totalH / 2, L.sideDepth / 2);
   // 依畫面直橫比讓整座木架放得進視野（手機直向時水平視角較窄）
-  const vfov = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * fracTarget);
-  const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
+  const tv = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const vfov = 2 * Math.atan(tv * fracTarget);
+  const hfov = 2 * Math.atan(tv * camera.aspect * fracXTarget); // 扣掉側欄蓋住的寬度
   // 寬、高各自需要的距離取大者（比外接球貼合，手機直向時木架不會縮得太小）
   const m = kind === 'front' ? 1.12 : 1.22;
   const d = Math.max((0.5 * Math.hypot(L.totalW, L.sideDepth) * m) / Math.tan(hfov / 2), (0.5 * L.totalH * m) / Math.tan(vfov / 2)) + L.sideDepth;
@@ -1338,6 +1339,7 @@ function setSidebar(open) {
   $('sidebar-toggle').setAttribute('aria-expanded', String(open));
   $('sidebar-toggle').title = $('sidebar-toggle').ariaLabel = open ? '收合側欄' : '展開側欄';
   try { localStorage.setItem(STORE_KEY + '.sidebar', open ? '1' : '0'); } catch { /* 忽略 */ }
+  if (rack) { updateFracTarget(); setView(currentView); }
 }
 $('sidebar-toggle').onclick = () => setSidebar($('sidebar').classList.contains('collapsed'));
 try { if (localStorage.getItem(STORE_KEY + '.sidebar') === '0') setSidebar(false); } catch { /* 忽略 */ }
@@ -1752,17 +1754,25 @@ function loadState() {
 }
 
 // ---------- 啟動 ----------
-// 手機版抽屜蓋住下方：只用上方可見區域，畫面中心往上移（fracNow 平滑追上 fracTarget）
-let fracTarget = 1, fracNow = 1;
+// 木架放在沒被面板蓋住的區域正中間：手機抽屜蓋住下方、桌面／橫向手機的側欄蓋住右邊
+// （fracNow 平滑追上 fracTarget；Y 是可見高度比例，X 是可見寬度比例）
+let fracTarget = 1, fracNow = 1, fracXTarget = 1, fracXNow = 1;
 function updateFracTarget() {
-  if (!isMobile()) { fracTarget = 1; return; }
-  const stops = sheetStops();
-  const covered = $('sidebar').offsetHeight - stops[sheet === 'full' ? 'half' : sheet];
-  fracTarget = Math.max(0.35, Math.min(1, 1 - covered / innerHeight));
+  const el = $('sidebar');
+  if (isMobile()) {
+    const stops = sheetStops();
+    const covered = el.offsetHeight - stops[sheet === 'full' ? 'half' : sheet];
+    fracTarget = Math.max(0.35, Math.min(1, 1 - covered / innerHeight));
+    fracXTarget = 1;
+    return;
+  }
+  fracTarget = 1;
+  const covered = el.classList.contains('collapsed') ? 0 : innerWidth - el.offsetLeft + 10; // offsetLeft 不受收合動畫的 transform 影響
+  fracXTarget = Math.max(0.4, Math.min(1, 1 - covered / innerWidth));
 }
 function applyViewOffset() {
   const w = viewport.clientWidth, h = viewport.clientHeight;
-  if (fracNow < 0.999) camera.setViewOffset(w, h, 0, (h * (1 - fracNow)) / 2, w, h);
+  if (fracNow < 0.999 || fracXNow < 0.999) camera.setViewOffset(w, h, (w * (1 - fracXNow)) / 2, (h * (1 - fracNow)) / 2, w, h);
   else camera.clearViewOffset();
   camera.updateProjectionMatrix();
 }
@@ -1774,10 +1784,15 @@ function resize() {
   if (isMobile()) setSheet(sheet, { reframe: false });
   updateFracTarget();
   applyViewOffset();
+  // 手機轉向（直式抽屜 ↔ 橫式側欄）：重新取景
+  if (rack && wasMobile !== isMobile()) setView(currentView);
+  wasMobile = isMobile();
 }
+let wasMobile = null;
 window.addEventListener('resize', resize);
 updateFracTarget();
 fracNow = fracTarget;
+fracXNow = fracXTarget;
 resize();
 renderParams();
 renderNameplate();
@@ -1795,9 +1810,11 @@ renderer.setAnimationLoop((now) => {
     orbit.target.lerpVectors(camTween.t0, camTween.t1, e);
     if (k >= 1) camTween = null;
   }
-  if (Math.abs(fracNow - fracTarget) > 0.001) {
+  if (Math.abs(fracNow - fracTarget) > 0.001 || Math.abs(fracXNow - fracXTarget) > 0.001) {
     fracNow += (fracTarget - fracNow) * follow(9);
+    fracXNow += (fracXTarget - fracXNow) * follow(9);
     if (Math.abs(fracNow - fracTarget) <= 0.001) fracNow = fracTarget;
+    if (Math.abs(fracXNow - fracXTarget) <= 0.001) fracXNow = fracXTarget;
     applyViewOffset();
   }
   if (state.explode !== explodeTarget) {
