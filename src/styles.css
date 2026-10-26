@@ -327,7 +327,7 @@ body.sidebar-closed #inspector { left: 50%; }
 
   #brand { left: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); }
   #hint { left: 16px; top: calc(36px + env(safe-area-inset-top, 0px)); max-width: calc(100vw - 90px); }
-  #toolbar { left: auto; right: calc(10px + env(safe-area-inset-right, 0px)); top: calc(12px + env(safe-area-inset-top, 0px)); bottom: auto; transform: none;
+  #toolbar, body.sidebar-closed #toolbar { left: auto; right: calc(10px + env(safe-area-inset-right, 0px)); top: calc(12px + env(safe-area-inset-top, 0px)); bottom: auto; transform: none;
     flex-direction: column; animation: rise 0.9s 0.15s var(--ease) both; }
   #toolbar .seg { flex-direction: column; }
   #toolbar .sep { width: 20px; height: 1px; margin: 4px 0; }

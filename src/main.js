@@ -286,9 +286,12 @@ function buildMountSpheres() {
     s.position.set(m.x, m.y, mountZ());
     s.renderOrder = 10;
     s.userData.mountId = m.id;
-    const tag = label(`#${m.id}`, 'mount-tag');
-    tag.position.set(0, 1.9, 0);
-    s.add(tag);
+    // 觸控螢幕小，掛點多時編號會疊在一起：只標選取的那個
+    if (!coarsePointer || m.id === state.selected) {
+      const tag = label(`#${m.id}`, 'mount-tag');
+      tag.position.set(0, 1.9, 0);
+      s.add(tag);
+    }
     mountsGroup.add(s);
   }
 }
@@ -780,7 +783,7 @@ function updateOverlay() {
   }
 
   // 手指空間：最下一列左邊兩罐之間、最左罐到側板（避開上方的掛點標籤）
-  if ((state.showDims || state.selectedGap) && rack.cans.length) {
+  if (((state.showDims && !coarsePointer) || state.selectedGap) && rack.cans.length) {
     const yTop = Math.min(...rack.cans.map((c) => c.y));
     const row = rack.cans.filter((c) => Math.abs(c.y - yTop) < 0.5).sort((a, b) => a.x - b.x);
     const c0 = row[0], y = c0.y + c0.h * 0.6, zc = c0.z + c0.r;
@@ -792,7 +795,9 @@ function updateOverlay() {
 
   // 掛點之間：最小生成樹的邊（只標示相鄰的掛點）
   for (const [a, b] of mountPairs()) {
-    addLine([a.x, a.y, z], [b.x, b.y, z], lineMats.pair, `${fmt(Math.hypot(b.x - a.x, b.y - a.y))}`, 'soft');
+    // 觸控：只標跟選取掛點相連的距離，其他只畫線
+    const show = !coarsePointer || a.id === state.selected || b.id === state.selected;
+    addLine([a.x, a.y, z], [b.x, b.y, z], lineMats.pair, show ? `${fmt(Math.hypot(b.x - a.x, b.y - a.y))}` : '', 'soft');
   }
 
   // 選取的掛點：到各邊距離
@@ -1342,7 +1347,8 @@ function setSidebar(open) {
   if (rack) { updateFracTarget(); setView(currentView); }
 }
 $('sidebar-toggle').onclick = () => setSidebar($('sidebar').classList.contains('collapsed'));
-try { if (localStorage.getItem(STORE_KEY + '.sidebar') === '0') setSidebar(false); } catch { /* 忽略 */ }
+// 收合只用在桌面；手機是底部抽屜，不套用（舊版在手機上存過收合狀態，會把工具列撐開）
+try { if (localStorage.getItem(STORE_KEY + '.sidebar') === '0' && !matchMedia('(max-width: 640px)').matches) setSidebar(false); } catch { /* 忽略 */ }
 
 // 手機：底部抽屜，三段停靠（peek 只露摘要與分頁／half 半開／full 全開），拖拉把手或點分頁切換
 const isMobile = () => matchMedia('(max-width: 640px)').matches;
