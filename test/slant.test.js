@@ -7,11 +7,11 @@ import { layoutParts, toDXF } from '../src/export.js';
 import { maskToArtwork } from '../src/artwork.js';
 import { bbox } from '../src/geometry.js';
 
-test('預設：39×100 的瓶子、尖嘴朝下 15°、露出 30mm，沒有警告', () => {
+test('預設：39×100 的瓶子、尖嘴朝上 15°、瓶肩以上露出（42mm），沒有警告', () => {
   const r = buildRack(DEFAULTS, []);
   assert.deepEqual(r.warnings, []);
   assert.equal(r.params.tilt, 15);
-  assert.equal(r.layout.stickOut, 30);
+  assert.equal(r.layout.stickOut, 42);
   assert.equal(r.items.length, DEFAULTS.kinds * DEFAULTS.perKind);
   assert.equal(r.info.capacity, 36);
 });
@@ -23,10 +23,11 @@ test('瓶底頂在背板前面，瓶身穿過前後孔的中心', () => {
   assert.ok(L.zb - (L.P.bottleDia / 2) * Math.sin(th) >= L.zs - 1e-6);
   // 軸線：前孔條中間平面 → 後孔條中間平面，高度差 = 前後距離 × tan
   const [zb, yb] = L.bottleBase(L.holeY[0]);
-  const yAt = (z) => yb - (z - zb) * Math.tan(th);
+  const yAt = (z) => yb + (z - zb) * Math.tan(th); // 尖嘴朝上：往前越高
   assert.ok(Math.abs(yAt(L.zf + L.t / 2) - L.holeY[0]) < 1e-6);
   assert.ok(Math.abs(yAt(L.zr + L.t / 2) - L.rearY[0]) < 1e-6);
   // 孔夠大：斜著穿過板厚也不卡
+  assert.ok(L.rearY[0] < L.holeY[0], '後孔比前孔低，瓶子往後靠');
   const R = (L.P.bottleDia + L.P.holeClearance) / 2;
   assert.ok(L.b >= R / Math.cos(th) + (L.t * Math.tan(th)) / 2 - 1e-6);
 });
@@ -46,6 +47,8 @@ test('後孔條避開左右鎖點螺栓，也在連接板的高度之下', () =>
     assert.ok(L.zr + L.t + L.tol / 2 < L.lockZ - r - 2 + 1e-6 || L.zr - L.tol / 2 > L.lockZ + r + 2 - 1e-6, `zr ${L.zr} lockZ ${L.lockZ}`);
     const rearTop = L.rearY[L.rows - 1] + L.rearH / 2;
     assert.ok(rearTop <= L.H - L.spliceDown + 1e-6);
+    // 最下面一列的後孔條也不能伸進底部邊距
+    assert.ok(L.rearY[0] - L.rearH / 2 >= L.e - 1e-6);
   }
 });
 
@@ -66,7 +69,7 @@ test('瓶子太短：前孔條往前移到放得下連接板，並說明露出�
   assert.ok(r.warnings.some((w) => w.includes('露出長度')));
 });
 
-test('開名牌：每一列的前孔條各自刻字，刻在孔的上方', () => {
+test('開名牌：每一列的前孔條各自刻字，刻在孔的下方', () => {
   const m = new Uint8Array(100);
   for (let y = 2; y < 8; y++) for (let x = 2; x < 8; x++) m[y * 10 + x] = 1;
   const art = maskToArtwork(m, 10, 10);
@@ -75,7 +78,9 @@ test('開名牌：每一列的前孔條各自刻字，刻在孔的上方', () =>
   const fronts = r.parts.filter((p) => p.kind === 'front');
   assert.equal(fronts.filter((p) => p.artKey).length, 5);
   const L = r.layout;
-  for (const p of fronts.filter((q) => q.artRect)) assert.ok(p.artRect.y >= L.P.web + 2 * L.b - 1e-6);
+  for (const p of fronts.filter((q) => q.artRect)) assert.ok(p.artRect.y + p.artRect.h <= L.vHole - L.b + 1e-6);
+  // 瓶子方向朝外往上
+  assert.ok(r.items[0].dir[1] > 0);
 });
 
 test('零件都放得進板材，DXF 可以匯出；雷射也一樣', () => {
@@ -110,4 +115,17 @@ test('掛點不能在瓶底後面（螺絲頭會被瓶底壓到）；預設掛�
   assert.match(r.mounts[0].reason, /瓶底/);
   const auto = autoMounts(L).map((m, k) => ({ id: k + 1, ...m }));
   assert.ok(buildRack(DEFAULTS, auto).mounts.every((m) => m.valid));
+});
+
+test('前孔卡在瓶身直段上：預設在直段最上面，露出長度調太小會被擋住', () => {
+  const L = deriveLayout(DEFAULTS);
+  const th = (L.P.tilt * Math.PI) / 180;
+  // 前孔條後面、前面沿著瓶軸到瓶底的距離都在直段內
+  const along = (z) => (z - L.zb) / Math.cos(th);
+  assert.ok(along(L.zf + L.t) <= L.P.bodyLen + 1e-6);
+  assert.ok(along(L.zf) >= 0);
+  assert.equal(L.P.bodyLen, 60);
+  const r = deriveLayout({ ...DEFAULTS, stickOut: 10 });
+  assert.equal(r.fields.stickOut.adjusted, true);
+  assert.ok(r.P.stickOut >= DEFAULTS.bottleLen - r.P.bodyLen);
 });

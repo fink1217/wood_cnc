@@ -262,15 +262,25 @@ function rebuild(light = false) {
   if (firstBuild) { setView('iso', { intro: true }); firstBuild = false; }
 }
 
-// 尖嘴瓶：瓶身圓柱 + 收窄的瓶肩與尖嘴，沿著傾斜方向擺
-const bottleNozzleMat = new THREE.MeshStandardMaterial({ color: 0x1a1c1f, roughness: 0.5 });
+// 尖嘴瓶：直的瓶身、圓弧瓶肩、比瓶身細的瓶蓋、尖嘴（照常見的尖嘴擠瓶比例），沿著傾斜方向擺
+const bottleCapMat = new THREE.MeshStandardMaterial({ color: 0xf1f1ee, roughness: 0.35, transparent: true, opacity: 0.92 });
 function bottleMesh(c, mat) {
   const g = new THREE.Group();
-  const body = c.len * 0.62, shoulder = c.len * 0.14, nozzle = c.len - body - shoulder;
+  const body = Math.min(c.body ?? c.len * 0.6, c.len * 0.95);
+  const rest = c.len - body;
+  const shoulder = rest * 0.2, cap = rest * 0.3, nozzle = rest - shoulder - cap;
+  const rc = c.r * 0.62; // 瓶蓋半徑
+  // 瓶肩：從瓶身半徑收到瓶蓋半徑的圓弧（用 Lathe 轉一圈）
+  const sh = [];
+  for (let k = 0; k <= 8; k++) {
+    const a = (k / 8) * (Math.PI / 2);
+    sh.push(new THREE.Vector2(rc + (c.r - rc) * Math.cos(a), body + shoulder * Math.sin(a)));
+  }
   const parts = [
     [new THREE.CylinderGeometry(c.r, c.r, body, 32), mat, body / 2],
-    [new THREE.CylinderGeometry(c.r * 0.45, c.r, shoulder, 32), mat, body + shoulder / 2],
-    [new THREE.CylinderGeometry(1.2, c.r * 0.35, nozzle, 16), bottleNozzleMat, body + shoulder + nozzle / 2],
+    [new THREE.LatheGeometry(sh, 32), mat, 0],
+    [new THREE.CylinderGeometry(rc, rc, cap, 32), bottleCapMat, body + shoulder + cap / 2],
+    [new THREE.CylinderGeometry(1, rc * 0.62, nozzle, 24), bottleCapMat, body + shoulder + cap + nozzle / 2],
   ];
   for (const [geo, m, at] of parts) {
     const mesh = new THREE.Mesh(geo, m);
@@ -1728,7 +1738,8 @@ function renderNameplate() {
   $('np-invert').onchange = (e) => { np.invert = e.target.checked; artChanged(); };
   $('np-clear').onclick = () => { np.image = null; $('np-clear').hidden = true; artChanged(); };
   $('np-reset').onclick = () => resetSign('top');
-  $('lb-enabled').onchange = (e) => { lb.enabled = e.target.checked; $('lb-body').hidden = !lb.enabled; artChanged(); };
+  // 開關顏料名牌會改變尺寸（罐架加深、斜瓶架每列變高）：走參數連動，掛點跟著模組上緣移動
+  $('lb-enabled').onchange = (e) => { lb.enabled = e.target.checked; $('lb-body').hidden = !lb.enabled; saveState(); updateArtwork().then(onParamsChanged); };
   $('lb-mode').onchange = (e) => { lb.mode = e.target.value; artChanged(); };
   const setAll = (on) => { for (let k = 0; k < kindsCount(); k++) (lb.items[k] ||= {}).on = on; renderLabelList(); artChanged(); };
   $('lb-all-on').onclick = () => setAll(true);

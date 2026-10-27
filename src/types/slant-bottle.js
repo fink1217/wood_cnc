@@ -1,7 +1,7 @@
-// 架子類型：斜放長漆瓶架。瓶子尖嘴朝前、往下斜，瓶底頂在背板上。
+// 架子類型：斜放長漆瓶架。瓶子尖嘴朝前、往上斜，瓶底在後面比較低，靠重力頂在背板上，不會往前掉。
 // 每一列 = 一條前孔條（從正面插進側板的開口槽，可拔出重切）+ 一條後孔條（榫頭穿過側板）。
 // 孔切成橢圓：斜著穿過板子的圓柱，在垂直的板面上是上下較長的橢圓，再加上板厚造成的位移。
-// 名牌刻在前孔條的孔上方（尖嘴往下斜，刻在孔下方會被瓶子擋住）。
+// 名牌刻在前孔條的孔下方（尖嘴往上翹，孔上方會被瓶子擋住）。
 // 外框、接合、頂蓋與掛點由 system/frame.js 依拼裝規格產生，可以跟其他類型的模組疊在一起。
 
 import { rectCW } from '../geometry.js';
@@ -22,6 +22,7 @@ export const DEFAULTS = {
   racksX: 1,
   racksY: 1,
   tilt: null,
+  bodyLen: null,
   canGap: null,
   stickOut: null,
   holeClearance: null,
@@ -45,7 +46,8 @@ export const BASIC_SPEC = [
 export { CHOICE_SPEC, ASSEMBLY_SPEC };
 
 export const LINKED_BASIC_SPEC = [
-  { key: 'tilt', label: '尖嘴朝下傾斜', unit: '°', min: 0, max: 40, step: 1 },
+  { key: 'tilt', label: '尖嘴朝上傾斜', unit: '°', min: 0, max: 45, step: 1 },
+  { key: 'bodyLen', label: '瓶身直段長度', unit: 'mm', min: 10, max: 300, step: 1 },
   { key: 'canGap', label: '瓶子左右手指空間', unit: 'mm', min: 0, max: 60, step: 1 },
   { key: 'stickOut', label: '瓶子露出長度', unit: 'mm', min: 0, max: 200, step: 1 },
 ];
@@ -71,7 +73,7 @@ const NORMALIZE = {
 
 export function normalizeParams(input = {}) {
   const P = normalizeWith(NORMALIZE, input);
-  P.labelsOn = input.labelsOn === true; // 刻名牌：前孔條在孔上方多一條刻字區
+  P.labelsOn = input.labelsOn === true; // 刻名牌：前孔條在孔下方多一條刻字區
   return P;
 }
 
@@ -86,20 +88,25 @@ export function resolveParams(input = {}) {
   const D = raw.bottleDia, Lb = raw.bottleLen;
   const { t, bitDia, kerf, sheetW, sheetH, partGap } = resolveMachine(raw, resolve, warnings);
 
-  const tilt = resolve('tilt', 15, '尖嘴朝下一點，顏料會停在尖嘴那頭', [['max', 40, '再斜瓶子會滑出來']]);
+  const tilt = resolve('tilt', 15, '尖嘴朝上，瓶子會往後靠在背板上，放得穩也好拿', [['max', 45, '再陡瓶子不好拿出來']]);
   const holeClearance = resolve('holeClearance', clampNum(Math.round(D * 0.03 * 2) / 2, 1, 3), '瓶徑 × 3%');
   const canGap = resolve('canGap', 10, '瓶子是捏露出來的那段拿，不用留到一根手指寬',
     [['min', holeClearance + 2, '孔跟孔之間至少要剩 2mm 木頭']]);
-  const stickOut = resolve('stickOut', Math.round(Lb * 0.3), '全長的三成露在外面，捏得到瓶肩',
-    [['max', Math.round(Lb * 0.6), '露太多瓶子會往前翻'], ['min', 0, '']]);
+  // 瓶身：底部直的那段（瓶肩以下）。孔只能卡在這段，卡到瓶肩或瓶蓋瓶子會晃
+  const bodyLen = resolve('bodyLen', Math.round(Lb * 0.6), '尖嘴瓶大約下面六成是直的，上面是瓶肩、瓶蓋和尖嘴',
+    [['max', Lb, '不能比瓶子全長還長'], ['min', Math.min(Lb, t + 10), '太短孔卡不住']]);
+  // 露出長度：預設讓前孔卡在瓶身直段的最上面，瓶肩、瓶蓋、尖嘴露在外面好捏
+  const minStick = r2(Lb - bodyLen + 2);
+  const stickOut = resolve('stickOut', minStick, '瓶肩以上露在外面，前孔剛好卡在瓶身直段的最上面',
+    [['max', Math.max(minStick, Math.round(Lb * 0.75)), '露太多後面撐不住'], ['min', minStick, '前孔要卡在瓶身直的那段，卡到瓶肩瓶子會晃']]);
   const web = resolve('web', Math.max(5, Math.ceil(t * 0.6)), '孔上下各留一點木料，前孔條才不會斷');
-  const labelBand = raw.labelsOn ? resolve('labelBand', 12, '孔上方刻字的高度') : resolve('labelBand', 12, '開啟顏料名牌時才用到');
+  const labelBand = raw.labelsOn ? resolve('labelBand', 12, '孔下方刻字的高度') : resolve('labelBand', 12, '開啟顏料名牌時才用到');
 
   const hw = resolveHardware(raw, resolve);
   const sideClear = resolve('sideClear', Math.max(canGap, hw.minSide + 4), '側板內側要放連接板、卡扣腳和鎖點的螺帽',
     [['min', hw.minSide, '再小就放不下連接板和卡扣腳']]);
 
-  // 一列的高度：孔（橢圓）上下各一段木料，開名牌時孔上方再加刻字區
+  // 一列的高度：孔（橢圓）上下各一段木料，開名牌時孔下方再加刻字區
   const th = (tilt * Math.PI) / 180;
   const R = (D + holeClearance) / 2;
   const bHalf = R / Math.cos(th) + (t * Math.tan(th)) / 2;
@@ -119,7 +126,7 @@ export function resolveParams(input = {}) {
   const P = {
     ...hw.shared,
     bottleDia: D, bottleLen: Lb, kinds: raw.kinds, perKind: raw.perKind,
-    tilt, canGap, stickOut, holeClearance, web, labelBand, sideClear, maxCols, maxRows, labelsOn: raw.labelsOn,
+    tilt, bodyLen, canGap, stickOut, holeClearance, web, labelBand, sideClear, maxCols, maxRows, labelsOn: raw.labelsOn,
     needDepth: hw.needDepth, pitchY, bHalf,
     racksX: raw.racksX, racksY: raw.racksY,
     machine: raw.machine, kerf, dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap,
@@ -190,19 +197,21 @@ export function deriveLayout(input) {
     zr = options.length ? options.sort((p, q) => Math.abs(p - zr) - Math.abs(q - zr))[0] : zr;
   }
   if (zrMax < zrMin) warnings.push('瓶子太短，前後孔條擠在一起，瓶子會晃；把露出長度調小一點');
-  const lift = (zf - zr) * tan; // 後孔比前孔高多少（往後越高）
+  const lift = (zf - zr) * tan; // 後孔比前孔低多少（往後越低）
 
-  // 每一列：前孔條（條底 rowY）孔在下、刻字區在上；後孔條跟著瓶子往後抬高
+  // 每一列：前孔條（條底 rowY）刻字區在下、孔在上；後孔條跟著瓶子往後降低。
+  // 最下面一列的後孔條不能伸進底部邊距（那裡是連接板），所以整排往上墊高
   const pitchY = P.pitchY;
   const band = P.labelsOn ? P.labelBand : 0;
   const frontH = pitchY - 1;
-  const rowY = range(rows).map((i) => e + i * pitchY);
-  const holeY = rowY.map((y) => y + P.web + b); // 前孔中心
-  const rearY = holeY.map((y) => y + lift); // 後孔中心
+  const vHole = band + P.web + b; // 前孔中心離前孔條底的高度
   const rearH = 2 * (P.web + b);
+  const rowY = range(rows).map((i) => e + Math.max(0, lift - band) + i * pitchY);
+  const holeY = rowY.map((y) => y + vHole); // 前孔中心
+  const rearY = holeY.map((y) => y - lift); // 後孔中心
   const frontTab = [frontH * 0.2, frontH * 0.8];
   const rearTab = [rearH * 0.2, rearH * 0.8];
-  const H = Math.max(e + rows * pitchY, rearY[rows - 1] + b + P.web) + TOP_ROOM;
+  const H = Math.max(rowY[rows - 1] + frontH, rearY[rows - 1] + b + P.web) + TOP_ROOM;
   const topRoom = H - (rearY[rows - 1] + b + P.web);
   const J = joints({ t, tol, e, zs, frontZ: P.needDepth, boltHole: P.lockHoleDia, topRoom, roomFix: '把模組加高一點' }, warnings);
 
@@ -219,7 +228,7 @@ export function deriveLayout(input) {
   // 瓶子在每一列的位置（視覺化與測試用）：瓶底中心、方向
   const bottleBase = (yHole) => {
     const zc = zf + t / 2; // 前孔條中間的平面
-    return [zb, yHole + (zc - zb) * tan];
+    return [zb, yHole - (zc - zb) * tan];
   };
 
   // 瓶底頂在背板上：掛牆螺絲頭不能在瓶底後面
@@ -231,7 +240,7 @@ export function deriveLayout(input) {
 
   return {
     P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD: holeW, holeW, holeX, side, inset, zs, mountKeepout,
-    zb, zf, zr, lift, a, b, band, frontH, rearH, frontTab, rearTab, rowY, holeY, rearY, stickOut, bottleBase,
+    zb, zf, zr, lift, a, b, band, vHole, frontH, rearH, frontTab, rearTab, rowY, holeY, rearY, stickOut, bottleBase,
     depth: capDepth, rowPitch: pitchY, e, W, H, mxUnit, myUnit, topRoom,
     backSideTabL, backSideTabY, backY0, backY1, backSlots: [], capH, capDepth, capTabs, capTabL,
     ...J, sideDepth, labelZ: zf,
@@ -242,11 +251,11 @@ export function deriveLayout(input) {
 export const slantBottle = {
   id: 'slant-bottle',
   name: '斜放長漆瓶架',
-  summary: '尖嘴瓶斜插在孔裡，尖嘴朝前微微往下，名牌刻在每一列的孔上方。',
+  summary: '尖嘴瓶斜插在孔裡，尖嘴朝前往上翹，瓶子靠在背板上不會掉，名牌刻在每一列的孔下方。',
   itemNoun: '瓶',
-  labelHint: '刻在每一列前孔條的孔上方；換顏色時拿掉瓶子、把前孔條往前拔出來重切',
-  // 首頁的示意圖（側視：瓶底頂在背板，尖嘴朝前往下斜）
-  icon: '<svg viewBox="0 0 120 90"><path d="M14 6v78M14 84h92"/><path d="M74 10v74"/><path d="M40 10v74"/><g class="fill"><path d="M18 18l52 14-4 14-52-14z"/><path d="M18 50l52 14-4 14-52-14z"/></g><path d="M70 32l24 9M66 46l28-5M70 64l24 9M66 78l28-5"/></svg>',
+  labelHint: '刻在每一列前孔條的孔下方；換顏色時拿掉瓶子、把前孔條往前拔出來重切',
+  // 首頁的示意圖（側視：瓶底靠在背板比較低，尖嘴朝前往上斜）
+  icon: '<svg viewBox="0 0 120 90"><path d="M14 6v78M14 84h92"/><path d="M74 6v74"/><path d="M40 6v74"/><g class="fill"><path d="M18 26l52-14 4 14-52 14z"/><path d="M18 62l52-14 4 14-52 14z"/></g><path d="M70 12l24-1M74 26l20-15M70 48l24-1M74 62l20-15"/></svg>',
   DEFAULTS, BASIC_SPEC, LINKED_BASIC_SPEC, ADVANCED_SPEC, CHOICE_SPEC, ASSEMBLY_SPEC,
   normalizeParams, resolveParams,
   derive: deriveLayout,
@@ -265,9 +274,9 @@ export const slantBottle = {
     const frontNotches = L.rowY.map((y) => ({ y0: y + L.frontTab[0], y1: y + L.frontTab[1], z: L.zf }));
     const frontHoles = (vc) => L.holeX.map((x) => ({ type: 'poly', pts: ellipseCW(x, vc, L.a, L.b) }));
     const rear = finish(stripShape(L, L.rearH, L.rearTab[0], L.rearTab[1], frontHoles(L.rearH / 2)));
-    // 前孔條：孔在下、刻字區在上；開名牌時每一種各自刻
+    // 前孔條：刻字區在下、孔在上；開名牌時每一種各自刻
     const lab = options.labels?.enabled && L.P.labelsOn ? options.labels : null;
-    const vHole = L.P.web + L.b;
+    const vHole = L.vHole;
     const plain = finish(stripShape(L, L.frontH, L.frontTab[0], L.frontTab[1], frontHoles(vHole)));
     const labeled = new Map();
     if (lab) {
@@ -275,7 +284,7 @@ export const slantBottle = {
         if (lab.items?.[k]?.on === false) continue;
         const art = lab.items?.[k]?.art?.loops?.length ? lab.items[k].art : null;
         const span = signSpan(L, lab, 1, 30);
-        const y0 = vHole + L.b + L.P.web * 0.5;
+        const y0 = L.P.web * 0.5; // 刻字區貼著前孔條底部，留半段木料
         const s = signPlate({
           x0: span.x0, x1: span.x1, top: L.band, t, tabs: [], tabL: 0, shape: 'rect', art, mode: lab.mode,
           margin: 1.5, minFeature: Math.max(1, L.P.bitDia),
@@ -305,11 +314,11 @@ export const slantBottle = {
     }
   },
 
-  // 瓶子：瓶底中心、朝外往下的方向、半徑、全長
+  // 瓶子：瓶底中心、朝外往上的方向、半徑、全長
   items(L) {
     const P = L.P;
     const th = (P.tilt * Math.PI) / 180;
-    const dir = [0, -Math.sin(th), Math.cos(th)];
+    const dir = [0, Math.sin(th), Math.cos(th)];
     const out = [];
     for (let j = 0; j < L.my; j++) {
       for (let i = 0; i < L.mx; i++) {
@@ -320,7 +329,7 @@ export const slantBottle = {
           for (let c = 0; c < L.cols; c++) {
             const n = (i % L.mxUnit) * L.cols + c;
             if (n >= L.N) continue;
-            out.push({ shape: 'bottle', kind, module: [i, j], x: i * L.W + L.holeX[c], y: j * L.H + yb, z: zb, dir, r: P.bottleDia / 2, len: P.bottleLen });
+            out.push({ shape: 'bottle', kind, module: [i, j], x: i * L.W + L.holeX[c], y: j * L.H + yb, z: zb, dir, r: P.bottleDia / 2, len: P.bottleLen, body: P.bodyLen });
           }
         }
       }
