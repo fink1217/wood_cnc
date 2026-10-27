@@ -126,6 +126,11 @@ export function validateMount(L, x, y) {
   for (const s of L.backSlots) {
     if (rectsOverlap(kb, bbox(s), pad)) return { ...result, valid: false, reason: '與層板榫槽重疊' };
   }
+  // 類型自己的禁區（例如瓶底頂著背板的位置）：螺絲頭在掛點那一點，半徑約 R
+  const head = { minX: u - R, maxX: u + R, minY: v - R, maxY: v + R };
+  for (const k of L.mountKeepout || []) {
+    if (rectsOverlap(head, k, pad)) return { ...result, valid: false, reason: k.reason };
+  }
   return result;
 }
 

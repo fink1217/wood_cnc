@@ -222,8 +222,15 @@ export function deriveLayout(input) {
     return [zb, yHole + (zc - zb) * tan];
   };
 
+  // 瓶底頂在背板上：掛牆螺絲頭不能在瓶底後面
+  const mountKeepout = [];
+  for (const yh of holeY) {
+    const yb = bottleBase(yh)[1], hh = (D / 2) * cos + 2;
+    for (const x of holeX) mountKeepout.push({ minX: x - D / 2 - 2, maxX: x + D / 2 + 2, minY: yb - hh, maxY: yb + hh, reason: '瓶底會壓到螺絲頭' });
+  }
+
   return {
-    P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD: holeW, holeW, holeX, side, inset, zs,
+    P, raw, fields, warnings, t, tol, K, N, mx, my, cols, rows, gap, pitch, holeD: holeW, holeW, holeX, side, inset, zs, mountKeepout,
     zb, zf, zr, lift, a, b, band, frontH, rearH, frontTab, rearTab, rowY, holeY, rearY, stickOut, bottleBase,
     depth: capDepth, rowPitch: pitchY, e, W, H, mxUnit, myUnit, topRoom,
     backSideTabL, backSideTabY, backY0, backY1, backSlots: [], capH, capDepth, capTabs, capTabL,
@@ -237,6 +244,9 @@ export const slantBottle = {
   name: '斜放長漆瓶架',
   summary: '尖嘴瓶斜插在孔裡，尖嘴朝前微微往下，名牌刻在每一列的孔上方。',
   itemNoun: '瓶',
+  labelHint: '刻在每一列前孔條的孔上方；換顏色時拿掉瓶子、把前孔條往前拔出來重切',
+  // 首頁的示意圖（側視：瓶底頂在背板，尖嘴朝前往下斜）
+  icon: '<svg viewBox="0 0 120 90"><path d="M14 6v78M14 84h92"/><path d="M74 10v74"/><path d="M40 10v74"/><g class="fill"><path d="M18 18l52 14-4 14-52-14z"/><path d="M18 50l52 14-4 14-52-14z"/></g><path d="M70 32l24 9M66 46l28-5M70 64l24 9M66 78l28-5"/></svg>',
   DEFAULTS, BASIC_SPEC, LINKED_BASIC_SPEC, ADVANCED_SPEC, CHOICE_SPEC, ASSEMBLY_SPEC,
   normalizeParams, resolveParams,
   derive: deriveLayout,

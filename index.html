@@ -22,7 +22,17 @@
   <div id="viewport"></div>
   <div id="fx" aria-hidden="true"></div>
 
-  <div id="brand"><i></i>PAINT&nbsp;RACK <span class="ver">dev</span></div>
+  <a id="brand" href="#/" title="回首頁選其他架子"><i></i>PAINT&nbsp;RACK <span id="brand-type"></span> <span class="ver">dev</span></a>
+
+  <!-- 首頁：選架子類型 -->
+  <section id="home" hidden>
+    <div class="home-inner">
+      <div class="home-brand"><i></i>PAINT&nbsp;RACK</div>
+      <h1>選一種架子開始</h1>
+      <p class="home-lead">輸入要放的東西，自動算出整座木架，匯出 CNC 或雷射的切割檔。每種架子都用同一套接合，同寬的模組可以上下疊在一起。</p>
+      <div id="type-grid" class="type-grid"></div>
+    </div>
+  </section>
   <div id="hint" aria-live="polite"></div>
   <div id="tooltip" hidden></div>
 

@@ -1,15 +1,21 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import {
-  buildRack, deriveLayout, autoMounts, validateMount, normalizeParams,
-  DEFAULTS, BASIC_SPEC, LINKED_BASIC_SPEC, CHOICE_SPEC, ADVANCED_SPEC, ASSEMBLY_SPEC, NAMEPLATE_MODES, NAMEPLATE_SHAPES,
-} from './rack.js';
+import { autoMounts, validateMount } from './system/frame.js';
+import { NAMEPLATE_MODES, NAMEPLATE_SHAPES } from './system/signs.js';
+import { SHARED_KEYS } from './system/spec.js';
+import { TYPES, TYPE_LIST, DEFAULT_TYPE } from './types/index.js';
 import { layoutParts, flatten, toSVG, toDXF, toBOM, makeZip, KIND_NAMES } from './export.js';
 import { calculatorUrl } from './calculator-link.js';
 import { loadImage, readFileAsDataURL, textCanvas, rasterize, cropMask, maskToArtwork } from './artwork.js';
 
-const LINKED_SPECS = [...LINKED_BASIC_SPEC, ...ADVANCED_SPEC];
+// 目前的架子類型：參數清單、尺寸推算、零件都由它決定（外框與接合各類型共用）
+let T = TYPES[DEFAULT_TYPE];
+const buildRack = (...a) => T.build(...a);
+const deriveLayout = (input) => T.derive(input);
+const normalizeParams = (input) => T.normalizeParams(input);
+const linkedSpecs = () => [...T.LINKED_BASIC_SPEC, ...T.ADVANCED_SPEC];
+const noun = () => T.itemNoun; // 罐／瓶
 
 const STORE_KEY = 'paintRack.v2';
 const $ = (id) => document.getElementById(id);
@@ -17,7 +23,9 @@ const fmt = (v) => (Math.round(v * 10) / 10).toFixed(1);
 
 // ---------- 狀態 ----------
 const state = {
-  params: { ...DEFAULTS },
+  type: DEFAULT_TYPE,
+  byType: {}, // 每種架子各自的 { params, mounts, nextId }；共用參數（板厚、機器…）切換時帶過去
+  params: { ...T.DEFAULTS },
   mounts: [],
   nextId: 1,
   selected: null,
@@ -33,7 +41,7 @@ const state = {
   // height = 名牌板高度（空白 = 蓋住層板與孔板前緣；只影響名牌），align / offset / width = 文字區位置
   labels: { enabled: false, mode: 'laser', height: null, width: null, align: 'center', offset: 0, items: [] },
   selectedSign: null, // { key: 'top' | 顏料編號, module }：正在調整的名牌
-  selectedGap: false, // 點了罐子：調整罐子左右的手指空間
+  selectedGap: false, // 點了罐子／瓶子：調整左右的手指空間
 };
 
 // 名牌圖案處理結果（由 updateArtwork 產生）：'top' 為頂端名牌，'label:k' 為第 k 種顏料
@@ -106,7 +114,7 @@ let drag = null; // 拖拉中的控制球：{ type, plane, start, ... }
 
 const KIND_COLORS = {
   side: 0xd9b48a, back: 0xc49a6c, shelf: 0xe4c49c, holeplate: 0xebd2ae, top: 0xe4c49c, clip: 0x4ec9e0, splice: 0x3fd6a0,
-  nameplate: 0xe8cfa8, label: 0xf0dcbc, capside: 0xd9b48a,
+  nameplate: 0xe8cfa8, label: 0xf0dcbc, capside: 0xd9b48a, front: 0xebd2ae, rear: 0xd9b48a,
 };
 const materials = {};
 for (const [k, c] of Object.entries(KIND_COLORS)) materials[k] = new THREE.MeshStandardMaterial({ color: c, roughness: 0.75 });
@@ -190,9 +198,13 @@ function rebuild(light = false) {
 
   disposeGroup(cansGroup);
   const canGeo = new THREE.CylinderGeometry(1, 1, 1, 40);
-  for (const c of rack.cans) {
+  for (const c of rack.items) {
     const hue = (c.kind * 0.618034) % 1;
     const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.55, 0.55), roughness: 0.4, metalness: 0.1 });
+    if (c.shape === 'bottle') {
+      cansGroup.add(bottleMesh(c, mat));
+      continue;
+    }
     const m = new THREE.Mesh(canGeo, mat);
     m.scale.set(c.r, c.h, c.r);
     m.position.set(c.x, c.y + c.h / 2, c.z);
@@ -248,6 +260,28 @@ function rebuild(light = false) {
   renderInspector();
 
   if (firstBuild) { setView('iso', { intro: true }); firstBuild = false; }
+}
+
+// 尖嘴瓶：瓶身圓柱 + 收窄的瓶肩與尖嘴，沿著傾斜方向擺
+const bottleNozzleMat = new THREE.MeshStandardMaterial({ color: 0x1a1c1f, roughness: 0.5 });
+function bottleMesh(c, mat) {
+  const g = new THREE.Group();
+  const body = c.len * 0.62, shoulder = c.len * 0.14, nozzle = c.len - body - shoulder;
+  const parts = [
+    [new THREE.CylinderGeometry(c.r, c.r, body, 32), mat, body / 2],
+    [new THREE.CylinderGeometry(c.r * 0.45, c.r, shoulder, 32), mat, body + shoulder / 2],
+    [new THREE.CylinderGeometry(1.2, c.r * 0.35, nozzle, 16), bottleNozzleMat, body + shoulder + nozzle / 2],
+  ];
+  for (const [geo, m, at] of parts) {
+    const mesh = new THREE.Mesh(geo, m);
+    mesh.position.y = at;
+    mesh.castShadow = true;
+    mesh.userData.can = c;
+    g.add(mesh);
+  }
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...c.dir));
+  g.position.set(c.x, c.y, c.z);
+  return g;
 }
 
 function applyExplode() {
@@ -653,11 +687,11 @@ function updateHint() {
       ? '<b>顏料名牌 · 全部連動</b>' + (coarsePointer ? '拖球或用下面的面板調' : '拖球或用下面的面板調 · 雙擊還原 · Esc 取消')
       : '<b>頂端名牌</b>直接拖圖案移動，橘色角球縮放' + (coarsePointer ? '' : ' · 雙擊還原 · Esc 取消');
   } else if (state.selectedGap) {
-    html = '<b>手指空間</b>罐子之間和靠側板的空隙會一起變';
+    html = `<b>手指空間</b>${noun()}子之間和靠側板的空隙會一起變`;
   } else if (state.selected != null) {
     html = `<b>掛點 #${state.selected}</b>` + (coarsePointer ? '按住拖，或用下面的面板微調' : '拖拉或用下面的面板微調 · Delete 刪除 · Esc 取消');
   } else {
-    const signs = (rack?.parts.some(isSign) ? ' · 點名牌調整' : '') + ' · 點罐子調手指空間';
+    const signs = (rack?.parts.some(isSign) ? ' · 點名牌調整' : '') + ` · 點${noun()}子調手指空間`;
     html = (coarsePointer ? '單指轉、雙指縮放，掛點先點一下再拖' : '拖掛點移動 · 雙擊背板加掛點') + signs;
   }
   if (html === lastHint) return;
@@ -703,10 +737,10 @@ function renderInspector() {
     const f = rack.layout.fields.canGap;
     el.innerHTML = `<div class="insp-head"><b>手指空間</b><span>${f.auto ? '自動' : '手動'}</span>
         <button class="primary" data-insp-act="done">完成</button></div>
-      ${nudgeRow('gap', '罐子左右', fmtInput(f.value), 'mm', `<small>罐子之間、罐子到側板都留這麼寬。調大架子會變寬，深度不變。${f.adjusted ? `<br>${f.note}` : ''}</small>`)}
+      ${nudgeRow('gap', `${noun()}子左右`, fmtInput(f.value), 'mm', `<small>${noun()}子之間、${noun()}子到側板都留這麼寬。調大架子會變寬，深度不變。${f.adjusted ? `<br>${f.note}` : ''}</small>`)}
       <div class="row-buttons">${[16, 20, 25].map((v) => `<button data-gap-preset="${v}">${v}</button>`).join('')}
         ${f.auto ? '' : '<button class="ghost" data-insp-act="gap-auto">改回自動</button>'}</div>
-      <p class="hint">寬度 ${fmt(rack.info.width)} mm · 每模組 ${rack.layout.cols} 罐寬</p>`;
+      <p class="hint">寬度 ${fmt(rack.info.width)} mm · 每模組 ${rack.layout.cols} ${noun()}寬</p>`;
     el.hidden = false;
     el.dataset.kind = 'gap';
   } else if (m) {
@@ -860,10 +894,12 @@ function updateOverlay() {
   }
 
   // 手指空間：最下一列左邊兩罐之間、最左罐到側板（避開上方的掛點標籤）
-  if (((state.showDims && !coarsePointer) || state.selectedGap) && rack.cans.length) {
-    const yTop = Math.min(...rack.cans.map((c) => c.y));
-    const row = rack.cans.filter((c) => Math.abs(c.y - yTop) < 0.5).sort((a, b) => a.x - b.x);
-    const c0 = row[0], y = c0.y + c0.h * 0.6, zc = c0.z + c0.r;
+  if (((state.showDims && !coarsePointer) || state.selectedGap) && rack.items.length) {
+    const yTop = Math.min(...rack.items.map((c) => c.y));
+    const row = rack.items.filter((c) => Math.abs(c.y - yTop) < 0.5).sort((a, b) => a.x - b.x);
+    const c0 = row[0];
+    const bottle = c0.shape === 'bottle';
+    const y = bottle ? L.holeY[0] - L.b - 3 : c0.y + c0.h * 0.6, zc = bottle ? L.zf + L.t + 1 : c0.z + c0.r;
     const mat = state.selectedGap ? lineMats.dim : lineMats.edge;
     const cls = state.selectedGap ? 'gap-tag' : 'soft';
     addLine([L.t, y, zc], [c0.x - c0.r, y, zc], mat, fmt(L.side), cls);
@@ -920,27 +956,27 @@ const fieldHTML = (spec, value, extra = '') => `
 function renderParams() {
   const root = $('params');
   root.innerHTML = `
-    <div class="param-block">${BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('')}
-      ${LINKED_BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
+    <div class="param-block">${T.BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('')}
+      ${T.LINKED_BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
     <h3>加工與五金</h3>
-    <div class="param-block">${CHOICE_SPEC.map((s) => `
+    <div class="param-block">${T.CHOICE_SPEC.map((s) => `
       <label class="field"><span>${s.label}</span>
         <span class="input"><select id="param-${s.key}" data-key="${s.key}" data-choice="1">
           ${s.options.map(([v, l]) => `<option value="${v}" ${state.params[s.key] === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select></span></label>`).join('')}</div>
     <details class="group" id="advanced">
       <summary>進階 <span class="hint">都會自動算，想改再填</span></summary>
-      <div class="param-block">${ADVANCED_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
+      <div class="param-block">${T.ADVANCED_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
       <button id="adv-reset" class="ghost">進階全部改回自動</button>
     </details>`;
-  $('assembly').innerHTML = ASSEMBLY_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('');
+  $('assembly').innerHTML = T.ASSEMBLY_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('');
   syncMachineUI();
   try { $('advanced').open = localStorage.getItem(STORE_KEY + '.adv') === '1'; } catch { /* 忽略 */ }
   $('advanced').addEventListener('toggle', () => {
     try { localStorage.setItem(STORE_KEY + '.adv', $('advanced').open ? '1' : '0'); } catch { /* 忽略 */ }
   });
   $('adv-reset').onclick = () => {
-    for (const s of ADVANCED_SPEC) { state.params[s.key] = null; $('param-' + s.key).value = ''; }
+    for (const s of T.ADVANCED_SPEC) { state.params[s.key] = null; $('param-' + s.key).value = ''; }
     onParamsChanged();
   };
 }
@@ -1005,7 +1041,7 @@ function syncMachineUI() {
 /** 依連動結果更新進階欄位的提示與自動值 */
 function updateFieldNotes() {
   const fields = rack.layout.fields;
-  for (const spec of LINKED_SPECS) {
+  for (const spec of linkedSpecs()) {
     const f = fields[spec.key];
     const input = $('param-' + spec.key), note = $('note-' + spec.key);
     if (!f || !input) continue;
@@ -1020,8 +1056,8 @@ function updateFieldNotes() {
     }
     note.classList.toggle('adjusted', f.adjusted);
   }
-  const n = ADVANCED_SPEC.filter((s) => !fields[s.key].auto).length;
-  const adj = ADVANCED_SPEC.filter((s) => fields[s.key].adjusted).length;
+  const n = T.ADVANCED_SPEC.filter((s) => fields[s.key] && !fields[s.key].auto).length;
+  const adj = T.ADVANCED_SPEC.filter((s) => fields[s.key]?.adjusted).length;
   $('advanced').querySelector('summary .hint').textContent = n
     ? `改了 ${n} 項${adj ? `，其中 ${adj} 項有衝突，自動修正過` : ''}`
     : '都會自動算，想改再填';
@@ -1057,7 +1093,7 @@ function renderSidebar() {
   countTo($('dim-h'), i.height);
   countTo($('dim-d'), i.depth);
   $('summary').querySelector('.meta').innerHTML = `<span><b>${i.mx}×${i.my}</b> 模組</span><span><b>${i.cols}×${i.rows}</b> 每模組</span>` +
-    `<span><b>${i.capacity}</b> 罐${extra > 0 ? `（空 ${extra}）` : ''}</span><span><b>${rack.parts.length}</b> 件</span>`;
+    `<span><b>${i.capacity}</b> ${noun()}${extra > 0 ? `（空 ${extra}）` : ''}</span><span><b>${rack.parts.length}</b> 件</span>`;
   const w = [...rack.warnings, ...(layout?.warnings || [])];
   $('warnings').innerHTML = w.length
     ? `<details class="warn-box"><summary>${w.length} 項注意</summary>${w.map((t) => `<div class="warn">• ${t}</div>`).join('')}</details>`
@@ -1507,7 +1543,7 @@ $('mount-add').onclick = () => addMount();
 $('mount-auto').onclick = () => { resetMounts(); saveState(); rebuild(); };
 $('mount-clear').onclick = () => { state.mounts = []; state.selected = null; saveState(); rebuild(); };
 $('reset').onclick = () => {
-  state.params = { ...DEFAULTS };
+  state.params = { ...T.DEFAULTS };
   resetMounts();
   saveState();
   renderParams();
@@ -1549,8 +1585,8 @@ async function download(name, data) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
-const stamp = () => `paint-rack_${rack.info.mx}x${rack.info.my}_t${rack.params.thickness}`;
-const paramsJson = () => JSON.stringify({ params: state.params, mounts: state.mounts }, null, 2);
+const stamp = () => `${T.id === 'paint-can' ? 'paint-rack' : T.id}_${rack.info.mx}x${rack.info.my}_t${rack.params.thickness}`;
+const paramsJson = () => JSON.stringify({ type: T.id, params: state.params, mounts: state.mounts }, null, 2);
 // 雷射名牌：SVG 內嵌各自的黑白點陣，ZIP 另外附上每片的 PNG
 const laserHref = (part) => (part.artMode === 'laser' ? artFor(part).dataUrl : null);
 const dataUrlBytes = (url) => Uint8Array.from(atob(url.split(',')[1]), (c) => c.charCodeAt(0));
@@ -1580,6 +1616,7 @@ $('import-json').onchange = async (e) => {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
+    if (TYPES[data.type] && data.type !== T.id) switchType(data.type, { render: false });
     state.params = normalizeParams(data.params || {});
     state.mounts = Array.isArray(data.mounts) ? data.mounts.filter((m) => Number.isFinite(m.x) && Number.isFinite(m.y)).map((m, k) => ({ id: k + 1, x: m.x, y: m.y })) : [];
     state.nextId = state.mounts.length + 1;
@@ -1665,7 +1702,7 @@ function renderNameplate() {
       </div>
     </div>
     <div class="card">
-      <label class="card-head"><span>顏料名牌 <small>每種顏料一片，從正面插在側板上，隨時拔得起來</small></span><input type="checkbox" class="switch" id="lb-enabled" ${lb.enabled ? 'checked' : ''}/></label>
+      <label class="card-head"><span>顏料名牌 <small>${T.labelHint}</small></span><input type="checkbox" class="switch" id="lb-enabled" ${lb.enabled ? 'checked' : ''}/></label>
       <div id="lb-body" ${lb.enabled ? '' : 'hidden'}>
         <div class="pair">
           <label class="mini"><span>加工</span><select id="lb-mode">${opts(NAMEPLATE_MODES, lb.mode)}</select></label>
@@ -1811,19 +1848,15 @@ function escapeAttr(s) {
 
 // ---------- 儲存 ----------
 function saveState() {
+  state.byType[state.type] = { params: state.params, mounts: state.mounts, nextId: state.nextId };
+  const data = (nameplate) => JSON.stringify({
+    type: state.type, byType: state.byType, showCans: state.showCans, showDims: state.showDims, nameplate, labels: state.labels,
+  });
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify({
-      params: state.params, mounts: state.mounts, nextId: state.nextId, showCans: state.showCans, showDims: state.showDims,
-      nameplate: state.nameplate, labels: state.labels,
-    }));
+    localStorage.setItem(STORE_KEY, data(state.nameplate));
   } catch {
     // 圖片太大存不下時，至少保留其他設定
-    try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({
-        params: state.params, mounts: state.mounts, nextId: state.nextId, showCans: state.showCans, showDims: state.showDims,
-        nameplate: { ...state.nameplate, image: null }, labels: state.labels,
-      }));
-    } catch { /* 無法儲存時忽略 */ }
+    try { localStorage.setItem(STORE_KEY, data({ ...state.nameplate, image: null })); } catch { /* 無法儲存時忽略 */ }
   }
 }
 
@@ -1832,9 +1865,14 @@ function loadState() {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
       const d = JSON.parse(raw);
-      state.params = normalizeParams(d.params);
-      state.mounts = Array.isArray(d.mounts) ? d.mounts : [];
-      state.nextId = d.nextId || state.mounts.reduce((a, m) => Math.max(a, m.id + 1), 1);
+      // 舊版只有顏料罐架：整份當成顏料罐架的設定
+      state.byType = d.byType && typeof d.byType === 'object' ? d.byType : { [DEFAULT_TYPE]: { params: d.params, mounts: d.mounts, nextId: d.nextId } };
+      state.type = TYPES[d.type] ? d.type : DEFAULT_TYPE;
+      T = TYPES[state.type];
+      const cur = state.byType[state.type] || {};
+      state.params = normalizeParams(cur.params || {});
+      state.mounts = Array.isArray(cur.mounts) ? cur.mounts : [];
+      state.nextId = cur.nextId || state.mounts.reduce((a, m) => Math.max(a, m.id + 1), 1);
       state.showCans = d.showCans ?? true;
       state.showDims = d.showDims ?? true;
       if (d.nameplate && typeof d.nameplate === 'object') state.nameplate = { ...state.nameplate, ...d.nameplate };
@@ -1845,6 +1883,37 @@ function loadState() {
     }
   } catch { /* 讀取失敗則使用預設 */ }
   resetMounts();
+}
+
+/**
+ * 換架子類型：目前的設定先存起來；共用的參數（板厚、公差、機器、螺栓…）帶到新類型，
+ * 新類型有存過就接著用，沒有就從預設開始並自動排掛點。
+ */
+function switchType(id, { render = true } = {}) {
+  if (!TYPES[id]) return;
+  if (id === state.type && rack) return;
+  state.byType[state.type] = { params: state.params, mounts: state.mounts, nextId: state.nextId };
+  const shared = Object.fromEntries(SHARED_KEYS.map((k) => [k, state.params[k]]));
+  state.type = id;
+  T = TYPES[id];
+  const saved = state.byType[id];
+  state.params = normalizeParams({ ...(saved?.params || T.DEFAULTS), ...shared });
+  state.selected = null;
+  state.selectedSign = null;
+  state.selectedGap = false;
+  if (saved?.mounts) {
+    state.mounts = saved.mounts;
+    state.nextId = saved.nextId || state.mounts.reduce((a, m) => Math.max(a, m.id + 1), 1);
+  } else resetMounts();
+  saveState();
+  $('brand-type').textContent = T.name;
+  if (!render) return;
+  disposeGroup(handlesGroup);
+  renderParams();
+  renderNameplate();
+  firstBuild = true;
+  rebuild();
+  if (state.labels.enabled) updateArtwork().then(rebuild);
 }
 
 // ---------- 啟動 ----------
@@ -1928,6 +1997,31 @@ renderer.setAnimationLoop((now) => {
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 });
+
+// ---------- 首頁與架子類型 ----------
+// 網址 #/類型 直接進該類型的編輯器；沒有指定就顯示首頁（後面的 3D 先用上次的類型建好）
+$('type-grid').innerHTML = TYPE_LIST.map((t, k) => `
+  <a class="type-card" href="#/${t.id}" style="animation-delay:${0.08 * k + 0.1}s">
+    <div class="type-art">${t.icon}</div>
+    <div class="type-name">${t.name}</div>
+    <p>${t.summary}</p>
+    <span class="type-go">開始設計 →</span>
+  </a>`).join('') + `
+  <div class="type-card soon" style="animation-delay:${0.08 * TYPE_LIST.length + 0.1}s">
+    <div class="type-art"><svg viewBox="0 0 120 90"><path d="M60 30v30M45 45h30"/></svg></div>
+    <div class="type-name">更多架子</div>
+    <p>筆刷架、噴罐架之類的，之後會用同一套接合加進來。</p>
+  </div>`;
+function route() {
+  const id = location.hash.replace(/^#\/?/, '');
+  const home = !TYPES[id];
+  $('home').hidden = !home;
+  document.body.classList.toggle('at-home', home);
+  if (!home) switchType(id);
+  $('brand-type').textContent = T.name;
+}
+window.addEventListener('hashchange', route);
+route();
 
 window.__rack = () => rack; // 除錯用
 window.__state = () => state;

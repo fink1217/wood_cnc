@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRack, DEFAULTS, deriveLayout } from '../src/types/slant-bottle.js';
 import * as can from '../src/types/paint-can.js';
+import { autoMounts } from '../src/system/frame.js';
 import { layoutParts, toDXF } from '../src/export.js';
 import { maskToArtwork } from '../src/artwork.js';
 import { bbox } from '../src/geometry.js';
@@ -99,4 +100,14 @@ test('隨機參數都能產生零件', () => {
     assert.ok(r.parts.length > 0);
     assert.ok(Number.isFinite(r.info.width) && Number.isFinite(r.info.height));
   }
+});
+
+test('掛點不能在瓶底後面（螺絲頭會被瓶底壓到）；預設掛點都可以用', () => {
+  const L = deriveLayout(DEFAULTS);
+  const [, yb] = L.bottleBase(L.holeY[1]);
+  const r = buildRack(DEFAULTS, [{ id: 1, x: L.holeX[2], y: yb }]);
+  assert.equal(r.mounts[0].valid, false);
+  assert.match(r.mounts[0].reason, /瓶底/);
+  const auto = autoMounts(L).map((m, k) => ({ id: k + 1, ...m }));
+  assert.ok(buildRack(DEFAULTS, auto).mounts.every((m) => m.valid));
 });

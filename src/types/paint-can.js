@@ -274,6 +274,9 @@ export const paintCan = {
   name: '顏料罐架',
   summary: '罐子直立插在孔裡，每一列一種顏色，名牌從正面插在側板上。',
   itemNoun: '罐',
+  labelHint: '每種顏料一片，從正面插在側板上，隨時拔得起來',
+  // 首頁的示意圖（正視：層板上一排排直立的罐子）
+  icon: '<svg viewBox="0 0 120 90"><rect x="14" y="6" width="92" height="78" rx="2"/><path d="M14 34h92M14 62h92"/><g class="fill"><rect x="24" y="16" width="14" height="18" rx="2"/><rect x="46" y="16" width="14" height="18" rx="2"/><rect x="68" y="16" width="14" height="18" rx="2"/><rect x="24" y="44" width="14" height="18" rx="2"/><rect x="46" y="44" width="14" height="18" rx="2"/><rect x="68" y="44" width="14" height="18" rx="2"/></g></svg>',
   DEFAULTS, BASIC_SPEC, LINKED_BASIC_SPEC, ADVANCED_SPEC, CHOICE_SPEC, ASSEMBLY_SPEC,
   normalizeParams, resolveParams,
   derive: deriveLayout,
