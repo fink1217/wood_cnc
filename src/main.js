@@ -25,7 +25,9 @@ const state = {
   showCans: true,
   showDims: true,
   // 展示名牌：image 為使用者匯入的圖片（縮小後的 data URL），沒有圖片時用文字
-  nameplate: { enabled: false, mode: 'laser', shape: 'rect', height: 60, width: null, align: 'center', offset: 0, text: 'PAINT', threshold: 128, invert: false, image: null },
+  // artX / artY：圖案離置中位置的距離（mm）；artScale：圖案佔名牌可用區的幾成，小於 1 才有空間左右移
+  nameplate: { enabled: false, mode: 'laser', shape: 'rect', height: 60, width: null, align: 'center', offset: 0, text: 'PAINT', threshold: 128, invert: false, image: null,
+    artX: 0, artY: 0, artScale: 0.8 },
   // 每種顏料各自的名牌：items[k] = { on, text, offset }，可各自關閉、各自左右移；width 空白 = 滿寬
   // 每種顏料各自的名牌：items[k] = { on, text } 各自開關；大小與位置全部連動
   // height = 名牌板高度（空白 = 蓋住層板與孔板前緣；只影響名牌），align / offset / width = 文字區位置
@@ -315,6 +317,19 @@ const handleMats = {
   size: new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }),
 };
 const outlineMat = new THREE.LineDashedMaterial({ color: 0x4ef0ff, dashSize: 5, gapSize: 3, depthTest: false, transparent: true });
+const artOutlineMat = new THREE.LineDashedMaterial({ color: 0xffb35c, dashSize: 3, gapSize: 2, depthTest: false, transparent: true });
+handleMats.art = new THREE.MeshBasicMaterial({ color: 0xffb35c, depthTest: false, transparent: true });
+
+/** 點到的是否為選取中頂端名牌的圖案區：回傳該名牌零件 */
+function hitSignArt(pad = 4) { // pad：圖案很細時也點得到
+  const sel = state.selectedSign;
+  if (!sel || sel.key !== 'top' || state.explode > 0) return null;
+  const hit = raycaster.intersectObjects(partsGroup.children, true).find((q) => q.object.isMesh);
+  const part = hit?.object.userData.part;
+  if (!part || part.kind !== 'nameplate' || !part.artRect) return null;
+  const a = part.artRect, u = hit.point.x - part.origin[0], v = hit.point.y - part.origin[1];
+  return u >= a.x - pad && u <= a.x + a.w + pad && v >= a.y - pad && v <= a.y + a.h + pad ? part : null;
+}
 
 function selectedSignPart() {
   if (!state.selectedSign || !rack) return null;
@@ -333,6 +348,19 @@ function selectSign(part) {
   updateHint();
   markLabelRow();
   renderInspector();
+  if (isMobile()) focusSign(part);
+}
+
+/** 手機：鏡頭拉近選取的名牌，放在調整面板上方，手指才拖得到 */
+let viewBeforeFocus = null;
+function focusSign(part) {
+  const b = part.bounds, [ox, oy, oz] = part.origin;
+  const c = new THREE.Vector3(ox + (b.minX + b.maxX) / 2, oy + (b.minY + b.maxY) / 2, oz);
+  updateFracTarget();
+  const tv = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const d = Math.max((b.w * 0.72) / (tv * camera.aspect), (b.h * 0.9) / (tv * fracTarget)) + part.t;
+  if (!viewBeforeFocus) viewBeforeFocus = { pos: camera.position.clone(), target: orbit.target.clone() };
+  tweenCamera(c.clone().add(new THREE.Vector3(0, 0.12, 1).normalize().multiplyScalar(d)), c, 700);
 }
 
 function markLabelRow() {
@@ -353,6 +381,12 @@ function clearSelection() {
   updateHint();
   markLabelRow();
   renderInspector();
+  // 手機：名牌調完回到原本的視角
+  if (viewBeforeFocus) {
+    updateFracTarget();
+    tweenCamera(viewBeforeFocus.pos, viewBeforeFocus.target, 700);
+    viewBeforeFocus = null;
+  }
 }
 
 const handleRadius = () => Math.max(4, Math.max(rack.layout.totalW, rack.layout.totalH) * 0.009) * (coarsePointer ? 1.5 : 1);
@@ -377,7 +411,18 @@ function buildSignHandles() {
     m.userData.handle = type;
     handlesGroup.add(m);
   };
-  ball('move', [cx, yMid, z], handleMats.move, 1.7);
+  const art = part.kind === 'nameplate' && part.artRect;
+  ball('move', [cx, art ? oy : yMid, z], handleMats.move, 1.7); // 頂端名牌：中間留給圖案，移動球放在下緣
+  if (art) {
+    // 圖案外框（可直接拖）＋右上角縮放球
+    const a = part.artRect;
+    const apts = [[a.x, a.y], [a.x + a.w, a.y], [a.x + a.w, a.y + a.h], [a.x, a.y + a.h], [a.x, a.y]].map(([u, v]) => new THREE.Vector3(ox + u, oy + v, z));
+    const aline = new THREE.Line(new THREE.BufferGeometry().setFromPoints(apts), artOutlineMat);
+    aline.computeLineDistances();
+    aline.renderOrder = 11;
+    handlesGroup.add(aline);
+    ball('artsize', [ox + a.x + a.w, oy + a.y + a.h, z], handleMats.art, 0.8);
+  }
   ball('left', [ox + s.x0, yMid, z], handleMats.size);
   ball('right', [ox + s.x1, yMid, z], handleMats.size);
   ball('top', [cx, oy + top, z], handleMats.size);
@@ -429,6 +474,7 @@ function startDrag(type, obj) {
     drag.part = part;
     drag.key = signKey(part);
     drag.span0 = { ...part.span };
+    drag.art0 = part.artPos && { ...part.artPos, rect: { ...part.artRect } };
     drag.snapshot = { ...signCfg(drag.key) };
   }
   orbit.enabled = false;
@@ -469,6 +515,24 @@ function moveDrag() {
   }
   const { part, span0, key } = drag;
   const cfg = signCfg(key);
+  if (drag.type === 'art' && drag.art0) {
+    // 拖圖案：在名牌可用區內自由移動（左右、上下）
+    const a = drag.art0;
+    cfg.artX = Math.round(Math.min(a.maxDx, Math.max(a.minDx, a.dx + p.x - drag.start.x)));
+    cfg.artY = Math.round(Math.min(a.maxDy, Math.max(a.minDy, a.dy + p.y - drag.start.y)));
+    renderInspector();
+    rebuildSoon();
+    return;
+  }
+  if (drag.type === 'artsize' && drag.art0) {
+    // 拉右上角：以圖案中心等比縮放
+    const r = drag.art0.rect, cxA = part.origin[0] + r.x + r.w / 2, cyA = part.origin[1] + r.y + r.h / 2;
+    const k = Math.max(Math.abs(p.x - cxA) / (r.w / 2), Math.abs(p.y - cyA) / (r.h / 2));
+    cfg.artScale = Math.round(Math.min(1, Math.max(0.15, drag.art0.scale * k)) * 100) / 100;
+    renderInspector();
+    rebuildSoon();
+    return;
+  }
   const minW = part.kind === 'nameplate' ? 60 : 30;
   const u = p.x - part.origin[0], v = p.y - part.origin[1];
   const { aMin, aMax, x0, x1 } = span0;
@@ -555,6 +619,7 @@ function setCanGap(v) {
 function resetSign(key) {
   const cfg = signCfg(key);
   Object.assign(cfg, { width: null, align: 'center', offset: 0 });
+  if (key === 'top') Object.assign(cfg, { artX: 0, artY: 0 });
   saveState();
   rebuild();
 }
@@ -584,7 +649,9 @@ function updateHint() {
   let html;
   if (state.selectedSign) {
     const lab = state.selectedSign.key !== 'top';
-    html = `<b>${lab ? '顏料名牌 · 全部連動' : '頂端名牌'}</b>` + (coarsePointer ? '拖球或用下面的面板調' : '拖球或用下面的面板調 · 雙擊還原 · Esc 取消');
+    html = lab
+      ? '<b>顏料名牌 · 全部連動</b>' + (coarsePointer ? '拖球或用下面的面板調' : '拖球或用下面的面板調 · 雙擊還原 · Esc 取消')
+      : '<b>頂端名牌</b>直接拖圖案移動，橘色角球縮放' + (coarsePointer ? '' : ' · 雙擊還原 · Esc 取消');
   } else if (state.selectedGap) {
     html = '<b>手指空間</b>罐子之間和靠側板的空隙會一起變';
   } else if (state.selected != null) {
@@ -623,6 +690,11 @@ function renderInspector() {
       ${nudgeRow('offset', offLabel, fmtInput(s.offset), 'mm', s.maxOffset - s.minOffset < 0.5 ? '<small>滿寬時不能左右移</small>' : '')}
       ${nudgeRow('width', '寬度', fmtInput(s.width), 'mm', `<button class="ghost" data-insp-act="full">滿寬</button>`)}
       ${nudgeRow('height', key === 'top' ? '高出頂蓋' : '名牌高度', fmtInput(signHeight(part)), 'mm', key === 'top' ? '' : `<small>${rack.layout.fields.topGap?.note?.includes('名牌') ? '名牌比孔板高，上層已經自動加高' : '沒超過孔板就不會動到別的零件'}。最高到罐頂 ${fmt(rack.info.labelHMax)} mm</small>`)}
+      ${key === 'top' && part.artPos ? `<div class="insp-sub">圖案</div>
+        ${nudgeRow('artX', '左右', fmtInput(part.artPos.dx), 'mm')}
+        ${nudgeRow('artY', '上下', fmtInput(part.artPos.dy), 'mm')}
+        ${nudgeRow('artScale', '大小', Math.round(part.artPos.scale * 100), '%', part.artPos.maxDx < 0.5 && part.artPos.maxDy - part.artPos.minDy < 0.5 ? '<small>圖案已經撐滿，縮小一點才有空間移動</small>' : '')}
+        <div class="row-buttons"><button class="ghost" data-insp-act="art-center">圖案置中</button></div>` : ''}
       ${key === 'top' ? '' : '<p class="hint">名牌從正面插進側板的槽，要換直接拔出來。左右和寬度調的是字的位置。</p>'}
       <div class="row-buttons"><button class="ghost" data-insp-act="reset">還原滿寬置中</button></div>`;
     el.hidden = false;
@@ -648,8 +720,9 @@ function renderInspector() {
     el.hidden = true;
     el.innerHTML = '';
   }
-  // 手機：選取時抽屜往下讓位給調整面板，取消選取再回來
+  // 手機：選取時抽屜往下讓位給調整面板，取消選取再回來；木架改放在面板上方
   document.body.classList.toggle('selecting', !el.hidden);
+  if (isMobile()) updateFracTarget();
 }
 const fmtInput = (v) => String(Math.round(v * 10) / 10);
 
@@ -665,6 +738,9 @@ function applyInspector(key, value) {
     if (key === 'offset') cfg.offset = value;
     if (key === 'width') cfg.width = value >= part.span.full - 0.5 ? null : value;
     if (key === 'height') cfg.height = k === 'top' ? value : Math.min(rack.info.labelHMax, Math.max(6, value));
+    if (key === 'artX') cfg.artX = value;
+    if (key === 'artY') cfg.artY = value;
+    if (key === 'artScale') cfg.artScale = Math.min(1, Math.max(0.15, value / 100));
     saveState();
     if (key === 'height' && k !== 'top') onParamsChanged(); else rebuild();
   } else if (m) {
@@ -678,7 +754,7 @@ function applyInspector(key, value) {
 
 {
   const el = $('inspector');
-  const steps = { offset: 5, width: 10, height: 2, mx: 5, my: 5, gap: 1 };
+  const steps = { offset: 5, width: 10, height: 2, mx: 5, my: 5, gap: 1, artX: 2, artY: 2, artScale: 5 };
   el.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t) return;
@@ -693,6 +769,7 @@ function applyInspector(key, value) {
       rebuild();
     } else if (t.dataset.inspAct === 'full' && part) applyInspector('width', part.span.full);
     else if (t.dataset.inspAct === 'reset' && part) resetSign(signKey(part));
+    else if (t.dataset.inspAct === 'art-center') { Object.assign(state.nameplate, { artX: 0, artY: 0 }); saveState(); rebuild(); }
 
     else if (t.dataset.inspAct === 'delete' && state.selected != null) removeMount(state.selected);
     else if (t.dataset.gapPreset) setCanGap(Number(t.dataset.gapPreset));
@@ -1155,9 +1232,19 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   setPointer(e);
   downAt = { x: e.clientX, y: e.clientY, touch };
   // 1. 名牌控制球（只有選取的名牌才有）
-  const h = pickNear(handlesGroup.children.filter((o) => o.userData.handle), e);
+  // 手指落在圖案上時，圖案優先（名牌在手機上很小，上下的控制球會搶走觸控）；縮放角球除外
+  const strictArt = hitSignArt(0);
+  const h = pickNear(handlesGroup.children.filter((o) => o.userData.handle && (!strictArt || o.userData.handle === 'artsize')), e);
   if (h) { startDrag(h.userData.handle, h); renderer.domElement.setPointerCapture(e.pointerId); downAt = null; return; }
   if (state.explode > 0) return;
+  const artPart = strictArt || hitSignArt();
+  if (artPart) {
+    const z = artPart.origin[2] + artPart.t + 1;
+    startDrag('art', { position: new THREE.Vector3(0, 0, z), getWorldPosition: (v) => v.set(0, 0, z) });
+    renderer.domElement.setPointerCapture(e.pointerId);
+    downAt = null;
+    return;
+  }
   // 2. 掛點球：滑鼠直接拖；觸控要先點選，選取後才能拖
   const m = pickNear(mountsGroup.children, e);
   if (m) {
@@ -1223,7 +1310,8 @@ renderer.domElement.addEventListener('pointermove', (e) => {
     // 游標形狀提示能拖的東西
     const h = pickNear(handlesGroup.children.filter((o) => o.userData.handle), e);
     const onMount = !h && state.explode === 0 && pickNear(mountsGroup.children, e);
-    renderer.domElement.style.cursor = h ? (h.userData.handle === 'top' ? 'ns-resize' : 'ew-resize') : onMount ? 'grab' : '';
+    const cursors = { top: 'ns-resize', artsize: 'nesw-resize', move: 'ew-resize', left: 'ew-resize', right: 'ew-resize' };
+    renderer.domElement.style.cursor = h ? cursors[h.userData.handle] : onMount ? 'grab' : hitSignArt() ? 'move' : '';
     const hit = raycaster.intersectObjects(partsGroup.children, true).find((q) => q.object.isMesh);
     const mesh = h || onMount ? null : hit?.object || null;
     if (mesh && isSign(mesh.userData.part)) renderer.domElement.style.cursor = 'pointer';
@@ -1767,7 +1855,9 @@ function updateFracTarget() {
   const el = $('sidebar');
   if (isMobile()) {
     const stops = sheetStops();
-    const covered = el.offsetHeight - stops[sheet === 'full' ? 'half' : sheet];
+    const insp = $('inspector');
+    // 選取時：調整面板蓋住下方；沒選取：抽屜蓋住下方
+    const covered = !insp.hidden ? insp.offsetHeight : el.offsetHeight - stops[sheet === 'full' ? 'half' : sheet];
     fracTarget = Math.max(0.35, Math.min(1, 1 - covered / innerHeight));
     fracXTarget = 1;
     return;

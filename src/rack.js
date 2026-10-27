@@ -474,15 +474,23 @@ const arcPts = (cx, cy, rx, ry, a0, a1, n) => Array.from({ length: n + 1 }, (_, 
  * 2D (u = x, v = y)；v = 0 為插入面，榫頭往下 t。輪廓 = 底邊（含榫頭）+ 依造型產生的上緣。
  * art 為 artwork.js 的正規化圖案（寬 1、高 aspect）。
  */
-function signPlate({ x0, x1, top, t, tabs, tabL, shape = 'rect', art, mode, margin, minFeature, bandH = 0, topTabUp = 0 }) {
+function signPlate({ x0, x1, top, t, tabs, tabL, shape = 'rect', art, mode, margin, minFeature, bandH = 0, topTabUp = 0, artDx = 0, artDy = 0, artScale = 1 }) {
   const W = x1 - x0;
   let ax0 = x0 + margin, ax1 = x1 - margin, ay0 = margin, ay1 = top - margin;
   let upper; // 從右上 (x1, …) 沿上緣走到左上 (x0, …)
+  // 圖案放進 box：artScale = 撐滿的幾成，artDx / artDy = 離預設位置（置中；沿圖案外形時貼底）的距離，超出 box 會被擋住
   const fit = (box, alignBottom) => {
     const aw = box[1] - box[0], ah = box[3] - box[2];
     if (!art || aw <= 0 || ah <= 0) return null;
-    const s = Math.min(aw, ah / art.aspect);
-    return { s, ox: box[0] + (aw - s) / 2, oy: alignBottom ? box[2] : box[2] + (ah - s * art.aspect) / 2 };
+    const scale = clampNum(Number(artScale) || 1, 0.15, 1);
+    const s = Math.min(aw, ah / art.aspect) * scale, h = s * art.aspect;
+    const roomX = (aw - s) / 2;
+    const [minDy, maxDy] = alignBottom ? [0, ah - h] : [-(ah - h) / 2, (ah - h) / 2];
+    const dx = clampNum(Number(artDx) || 0, -roomX, roomX), dy = clampNum(Number(artDy) || 0, minDy, maxDy);
+    return {
+      s, ox: box[0] + roomX + dx, oy: (alignBottom ? box[2] : box[2] + (ah - h) / 2) + dy,
+      pos: { dx: r2(dx), dy: r2(dy), scale: r2(scale), minDx: r2(-roomX), maxDx: r2(roomX), minDy: r2(minDy), maxDy: r2(maxDy) },
+    };
   };
   let place = null;
   if (shape === 'round') {
@@ -548,7 +556,7 @@ function signPlate({ x0, x1, top, t, tabs, tabL, shape = 'rect', art, mode, marg
       if (mode === 'laser') raster = artRect;
     }
   }
-  return { outer, holes, engrave, raster, artRect, islands, tiny };
+  return { outer, holes, engrave, raster, artRect, artPos: place?.pos || null, islands, tiny };
 }
 
 /**
@@ -655,6 +663,7 @@ function nameplateShape(L, opts) {
     x0: span.x0, x1: span.x1, top: e + height, t, tabs, tabL,
     shape: opts.shape, art: opts.art?.loops?.length ? opts.art : null, mode: opts.mode,
     margin: Math.max(4, L.P.bitDia * 2), minFeature: Math.max(1, L.P.bitDia), bandH: Math.min(e, 15),
+    artDx: opts.artX, artDy: opts.artY, artScale: opts.artScale ?? 1,
   });
   return { ...s, tabs, tabL, height, span };
 }
@@ -820,7 +829,7 @@ export function buildRack(input, mounts = [], options = {}) {
     add(`${tag} 頂板`, 'top', capPlate, mod, [x0, capY0 + L.e + t, 0], X, Z, [0, 1, 0.5]);
     if (nameplate) {
       const p = add(`${tag} 展示名牌`, 'nameplate', nameplate, mod, [x0, capY0 + L.e + t, nz], X, Y, [0, 1.6, 0.4]);
-      Object.assign(p, { engrave: np.engrave, raster: np.raster, artRect: np.artRect, artMode: options.nameplate.mode, artKey: 'top', span: np.span });
+      Object.assign(p, { engrave: np.engrave, raster: np.raster, artRect: np.artRect, artMode: options.nameplate.mode, artKey: 'top', span: np.span, artPos: np.artPos });
     }
   }
 

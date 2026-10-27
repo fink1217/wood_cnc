@@ -114,3 +114,22 @@ test('罐頂到上層距離：最小值 = 固定孔板高度 + 8，只能往上�
   assert.equal(r.info.rowPitch, DEFAULTS.thickness + DEFAULTS.canHeight + 80);
 });
 
+
+test('頂端名牌圖案可以左右上下移動與縮放，並擋在名牌可用區內', () => {
+  const { m, w, h } = sampleMask();
+  const art = maskToArtwork(m, w, h);
+  const np = (o) => buildRack(DEFAULTS, [], { nameplate: { enabled: true, mode: 'engrave', height: 60, art, ...o } }).parts.find((p) => p.kind === 'nameplate');
+  const base = np({ artScale: 0.5 });
+  const moved = np({ artScale: 0.5, artX: 20, artY: 5 });
+  assert.ok(Math.abs(moved.artRect.x - base.artRect.x - 20) < 1e-6);
+  assert.ok(Math.abs(moved.artRect.y - base.artRect.y - 5) < 1e-6);
+  assert.equal(moved.artPos.dx, 20);
+  // 超出可用區：停在邊上
+  const far = np({ artScale: 0.5, artX: 9999, artY: -9999 });
+  assert.equal(far.artPos.dx, far.artPos.maxDx);
+  assert.equal(far.artPos.dy, far.artPos.minDy);
+  // 縮放：0.5 倍時寬度是撐滿的一半
+  const full = np({ artScale: 1 });
+  assert.ok(Math.abs(base.artRect.w - full.artRect.w / 2) < 1e-6);
+  assert.equal(full.artPos.maxDx < 0.5 || full.artPos.maxDy - full.artPos.minDy < 0.5, true);
+});

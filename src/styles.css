@@ -334,7 +334,8 @@ body.sidebar-closed #inspector { left: 50%; }
   #toolbar button, .tool-toggle span { width: 42px; height: 42px; }
 
   #inspector { left: 0; right: 0; bottom: 0; width: auto; transform: none; border-radius: 22px 22px 0 0; border-bottom: none;
-    padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); animation: sheet-in 0.5s var(--ease) backwards; }
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); animation: sheet-in 0.5s var(--ease) backwards;
+    max-height: 46dvh; overflow-y: auto; overscroll-behavior: contain; }
   body.sidebar-closed #inspector { left: 0; }
   /* iOS：輸入框字級 ≥16px 才不會自動放大畫面 */
   .field input[type="number"], .field input[type="text"], .field select, .label-row input[type="text"], .art-row input[type="text"], .insp-row input { font-size: 16px; }
@@ -376,3 +377,4 @@ body.sidebar-closed #inspector { left: 50%; }
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }
 }
 .dim-label.gap-tag { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.insp-sub { font: 500 10.5px var(--mono); letter-spacing: 0.14em; color: #ffb35c; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
