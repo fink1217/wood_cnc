@@ -40,9 +40,9 @@ jobs:
           # 防快取：每次部署在 CSS、JS 與模組 import 加上版本號，瀏覽器才會載入新檔
           V="${GITHUB_SHA::7}"
           sed -i -E "s#(src/[A-Za-z0-9_-]+\.(js|css))\"#\1?v=$V\"#g" _site/index.html
-          sed -i -E "s#(from '\./[A-Za-z0-9_-]+\.js)'#\1?v=$V'#g" _site/src/*.js
+          find _site/src -name '*.js' -exec sed -i -E "s#(from '\.\.?/[A-Za-z0-9_/.-]+\.js)'#\1?v=$V'#g" {} +
           sed -i "s#<span class=\"ver\">dev</span>#<span class=\"ver\">$V</span>#" _site/index.html
-          grep -c "?v=$V" _site/index.html _site/src/*.js
+          grep -rc "?v=$V" _site/index.html _site/src
       - uses: actions/configure-pages@v5
         with:
           enablement: true
