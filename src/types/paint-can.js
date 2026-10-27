@@ -4,8 +4,8 @@
 import { rectCW, dogbone } from '../geometry.js';
 import {
   clampNum, r1, r2, range, SHARED_DEFAULTS, THICKNESS_SPEC, TOLERANCE_SPEC, CHOICE_SPEC, ASSEMBLY_SPEC,
-  MARGIN_SPEC, MAX_COLS_SPEC, MAX_ROWS_SPEC, MACHINE_ADVANCED_SPEC,
-  normalizeWith, makeResolver, resolveMachine, resolveHardware, joints,
+  MARGIN_SPEC, MAX_COLS_SPEC, MAX_ROWS_SPEC, MACHINE_ADVANCED_SPEC, MODULE_W_SPEC,
+  normalizeWith, snapWidth, makeResolver, resolveMachine, resolveHardware, joints,
 } from '../system/spec.js';
 import { plateBetweenSides, assemble } from '../system/frame.js';
 import { signPlate, signSpan } from '../system/signs.js';
@@ -26,6 +26,7 @@ export const DEFAULTS = {
   frontMargin: null,
   maxCols: null,
   maxRows: null,
+  moduleW: null,
 };
 
 export const BASIC_SPEC = [
@@ -53,6 +54,7 @@ export const ADVANCED_SPEC = [
   MARGIN_SPEC,
   MAX_COLS_SPEC('罐'),
   MAX_ROWS_SPEC,
+  MODULE_W_SPEC,
   ...MACHINE_ADVANCED_SPEC,
 ];
 
@@ -146,6 +148,7 @@ export function resolveParams(input = {}) {
     ...hw.shared,
     canDia: D, canHeight: h, kinds: raw.kinds, perKind: raw.perKind,
     canGap, depthGap, holeClearance, retainHeight, topGap, sideClear, frontMargin, maxCols, maxRows, labelsOn: raw.labelsOn, labelH,
+    needDepth,
     racksX: raw.racksX, racksY: raw.racksY,
     machine: raw.machine, kerf, dogbone: bitDia > 0, bitDia, sheetW, sheetH, partGap,
   };
@@ -166,7 +169,10 @@ export function deriveLayout(input) {
   const gap = P.canGap;
   const pitch = P.canDia + gap;
   const holeD = P.canDia + P.holeClearance;
-  const side = P.sideClear; // 最外側罐子到側板內面的距離
+  // 模組寬度取到格線（或手動指定），多出來的寬度平均分到最外側罐子兩邊
+  const needW = 2 * P.sideClear + P.canDia + (cols - 1) * pitch + 2 * t;
+  const W = snapWidth(needW, raw.moduleW, fields, P.sheetH - 2 * P.partGap);
+  const side = P.sideClear + (W - needW) / 2; // 最外側罐子到側板內面的距離
 
   const inset = t; // 背板離牆距離（側板後緣貼牆）
   const zs = inset + t; // 層板後緣
@@ -177,8 +183,7 @@ export function deriveLayout(input) {
 
   const rowPitch = t + P.canHeight + P.topGap;
   const e = P.margin;
-  const innerW = 2 * side + P.canDia + (cols - 1) * pitch;
-  const W = innerW + 2 * t;
+  const innerW = W - 2 * t;
   const holeX = range(cols).map((c) => t + side + P.canDia / 2 + c * pitch);
   // 模組側板高度 = 列數 × 列距：最上一列的頭頂空間延伸到上一個模組（或頂蓋）的底層板，
   // 所以上下接縫處仍是完整的罐位，不留白。
@@ -200,7 +205,7 @@ export function deriveLayout(input) {
 
   // 接縫上方的空間：最上一列孔板頂面到側板頂緣（連接板下半與卡扣腳都在這裡，貼著側板、在罐子旁邊）
   const topRoom = rowPitch - e - retain - t;
-  const J = joints({ t, tol, e, zs, frontZ: depth, boltHole: P.lockHoleDia, topRoom }, warnings);
+  const J = joints({ t, tol, e, zs, frontZ: P.needDepth, boltHole: P.lockHoleDia, topRoom }, warnings);
 
   // 背板側邊榫頭與鎖點孔：每列放在孔板上方的空間；最上一列避開接縫處的連接板
   const spans = shelfY.map((y, r) => {

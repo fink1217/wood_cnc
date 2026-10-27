@@ -44,6 +44,26 @@ export const ASSEMBLY_SPEC = [
   { key: 'racksY', label: '垂直堆疊幾架', unit: '架', min: 1, max: 8, step: 1, int: true },
 ];
 
+// 模組寬度的格線：寬度取這個的倍數，不同類型的模組上下疊時側板才對得齊
+export const GRID_W = 50;
+export const MODULE_W_SPEC = { key: 'moduleW', label: '模組寬度', unit: 'mm', min: 0, max: 2000, step: 50 };
+
+/**
+ * 模組寬度：自動 = 需要的寬度往上取到格線；手動可以指定（例如跟另一種架子同寬才疊得起來），太窄會撐回最小值。
+ * 多出來的寬度由呼叫端平均分到兩側。
+ */
+export function snapWidth(need, manual, fields, cap = Infinity) {
+  const auto = manual == null;
+  const grid = Math.ceil((need - 1e-6) / GRID_W) * GRID_W;
+  const fits = grid <= cap + 1e-6; // 取到格線後還放得進板材
+  let v = auto ? (fits ? grid : need) : manual;
+  let note = auto ? (fits ? `取 ${GRID_W}mm 的倍數，不同架子同寬才疊得起來` : '取到格線會超過板材，用最小寬度') : '';
+  if (v < need - 1e-6) { v = need; if (!auto) note = `改成 ${r2(need)}，再窄放不下`; }
+  v = r2(v);
+  fields.moduleW = { value: v, auto, note, adjusted: !auto && Math.abs(v - manual) > 1e-9, min: r2(need) };
+  return v;
+}
+
 export const MARGIN_SPEC = { key: 'margin', label: '底部與頂蓋邊距', unit: 'mm', min: 0, max: 80, step: 1 };
 export const MAX_COLS_SPEC = (unit) => ({ key: 'maxCols', label: '每模組最多欄', unit, min: 1, max: 40, step: 1, int: true });
 export const MAX_ROWS_SPEC = { key: 'maxRows', label: '每模組最多列', unit: '列', min: 1, max: 20, step: 1, int: true };
@@ -153,7 +173,8 @@ export function resolveHardware(raw, resolve) {
 
 /**
  * 接合尺寸：卡扣槽、連接板、鎖點孔的位置。
- * frontZ = 前卡扣的基準（目前是層板前緣）；topRoom = 模組上緣下方可以放連接板與卡扣腳的高度。
+ * 都從牆面往前量、只跟板厚／公差／螺栓有關（frontZ = 連接板需要的最小深度），所以深淺不同的模組也對得上。
+ * topRoom = 模組上緣下方可以放連接板與卡扣腳的高度（各類型自己算）。
  */
 export function joints({ t, tol, e, zs, frontZ, boltHole, topRoom, roomFix = '把「罐頂到上層距離」調大一點' }, warnings) {
   const nd = Math.min(e * 0.4, 12); // 卡槽深
