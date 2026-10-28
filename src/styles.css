@@ -416,3 +416,24 @@ a.type-card:active { transform: scale(0.98); }
   .type-grid { grid-template-columns: 1fr; }
   .type-art { aspect-ratio: 16 / 9; }
 }
+
+/* ---------- 組合擺放 ---------- */
+body:not(.combo-mode) #combo-panel { display: none; }
+body.combo-mode .tabs, body.combo-mode .panel[data-panel] { display: none !important; }
+body.combo-mode .tool-toggle:has(#explode) { display: none; }
+.combo-link { display: inline-block; margin: 2px 0 10px; font: 500 12px var(--mono); color: var(--accent); text-decoration: none; letter-spacing: 0.02em; }
+.combo-link:hover { text-decoration: underline; }
+.combo-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; padding: 10px; margin: 4px -10px; border-radius: 12px;
+  border: 1px solid transparent; cursor: pointer; transition: background 0.2s, border-color 0.2s; }
+.combo-row:hover { background: var(--fill); }
+.combo-row.selected { background: var(--accent-soft); border-color: rgba(78, 240, 255, 0.3); }
+.combo-row .name { font-weight: 600; }
+.combo-row .sub { color: var(--muted); font: 10.5px/1.6 var(--mono); }
+.combo-row .button { padding: 6px 10px; }
+.combo-check { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.combo-check i { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 600 11px var(--mono); font-style: normal; }
+.combo-check.ok i { background: rgba(94, 255, 176, 0.15); color: var(--ok); }
+.combo-check.warn i { background: rgba(255, 179, 92, 0.15); color: #ffb35c; }
+.combo-check.bad i { background: rgba(255, 84, 104, 0.15); color: var(--danger); }
+.combo-check p { margin: 1px 0 8px; font-size: 12.5px; line-height: 1.6; }
+.combo-check button { margin: 0 6px 6px 0; }

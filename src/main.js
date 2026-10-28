@@ -5,6 +5,7 @@ import { autoMounts, validateMount } from './system/frame.js';
 import { NAMEPLATE_MODES, NAMEPLATE_SHAPES } from './system/signs.js';
 import { SHARED_KEYS } from './system/spec.js';
 import { TYPES, TYPE_LIST, DEFAULT_TYPE } from './types/index.js';
+import { blockOf, analyzeCombo, snapBlock } from './system/combo.js';
 import { layoutParts, flatten, toSVG, toDXF, toBOM, makeZip, KIND_NAMES } from './export.js';
 import { calculatorUrl } from './calculator-link.js';
 import { loadImage, readFileAsDataURL, textCanvas, rasterize, cropMask, maskToArtwork } from './artwork.js';
@@ -42,6 +43,8 @@ const state = {
   labels: { enabled: false, mode: 'laser', height: null, width: null, align: 'center', offset: 0, items: [] },
   selectedSign: null, // { key: 'top' | 顏料編號, module }：正在調整的名牌
   selectedGap: false, // 點了罐子／瓶子：調整左右的手指空間
+  // 組合擺放：牆上的每一座架子 { id, type, x, y }（用各類型目前的設計）
+  combo: { items: [], nextId: 1 },
 };
 
 // 名牌圖案處理結果（由 updateArtwork 產生）：'top' 為頂端名牌，'label:k' 為第 k 種顏料
@@ -62,6 +65,8 @@ loadState();
 
 let rack = null;
 let layout = null;
+let mode = 'edit'; // 'edit' = 單一架子的編輯器；'combo' = 組合擺放（多座架子放在同一面牆上）
+let combo = null; // 組合擺放的計算結果 { racks: Map(類型 → 架子), blocks, analysis }
 
 // ---------- 場景 ----------
 const viewport = $('viewport');
@@ -197,43 +202,10 @@ function rebuild(light = false) {
   applyExplode();
 
   disposeGroup(cansGroup);
-  const canGeo = new THREE.CylinderGeometry(1, 1, 1, 40);
-  for (const c of rack.items) {
-    const hue = (c.kind * 0.618034) % 1;
-    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.55, 0.55), roughness: 0.4, metalness: 0.1 });
-    if (c.shape === 'bottle') {
-      cansGroup.add(bottleMesh(c, mat));
-      continue;
-    }
-    const m = new THREE.Mesh(canGeo, mat);
-    m.scale.set(c.r, c.h, c.r);
-    m.position.set(c.x, c.y + c.h / 2, c.z);
-    m.castShadow = true;
-    m.userData.can = c;
-    cansGroup.add(m);
-  }
+  for (const c of rack.items) cansGroup.add(itemMesh(c));
   cansGroup.visible = state.showCans;
 
-  // 牆面
-  const span = Math.max(L.totalW, L.totalH);
-  wall.scale.set(L.totalW + span, L.totalH + span, 1);
-  wall.position.set(L.totalW / 2, L.totalH / 2, -0.5);
-  if (wallGrid) { scene.remove(wallGrid); wallGrid.geometry.dispose(); }
-  const gsize = Math.ceil((span * 2) / 100) * 100;
-  wallGrid = new THREE.GridHelper(gsize, gsize / 50, 0x1d4a52, 0x16191d);
-  wallGrid.rotation.x = Math.PI / 2;
-  wallGrid.position.set(L.totalW / 2, L.totalH / 2, -0.2);
-  scene.add(wallGrid);
-
-  sun.position.set(L.totalW * 0.2 + span, L.totalH + span, span * 1.5);
-  rim.position.set(-span * 1.5, L.totalH * 0.7, span * 0.6);
-  fogSpan = span;
-  sun.target.position.set(L.totalW / 2, L.totalH / 2, 0);
-  const sc = sun.shadow.camera;
-  sc.left = sc.bottom = -span * 1.2;
-  sc.right = sc.top = span * 1.2;
-  sc.near = 1; sc.far = span * 6;
-  sc.updateProjectionMatrix();
+  placeWall(0, 0, L.totalW, L.totalH);
 
   if (light) {
     buildMountSpheres();
@@ -258,8 +230,47 @@ function rebuild(light = false) {
   buildSignHandles();
   updateHint();
   renderInspector();
+  if (mode === 'combo') renderCombo();
 
   if (firstBuild) { setView('iso', { intro: true }); firstBuild = false; }
+}
+
+const canGeo = new THREE.CylinderGeometry(1, 1, 1, 40);
+/** 罐子或瓶子的 3D 模型（顏色依種類） */
+function itemMesh(c) {
+  const hue = (c.kind * 0.618034) % 1;
+  const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.55, 0.55), roughness: 0.4, metalness: 0.1 });
+  if (c.shape === 'bottle') return bottleMesh(c, mat);
+  const m = new THREE.Mesh(canGeo, mat);
+  m.scale.set(c.r, c.h, c.r);
+  m.position.set(c.x, c.y + c.h / 2, c.z);
+  m.castShadow = true;
+  m.userData.can = c;
+  return m;
+}
+
+/** 牆面、格線、光源與陰影範圍跟著要顯示的範圍走 */
+function placeWall(x0, y0, w, h) {
+  const span = Math.max(w, h, 300);
+  const cx = x0 + w / 2, cy = y0 + h / 2;
+  wall.scale.set(w + span, h + span, 1);
+  wall.position.set(cx, cy, -0.5);
+  if (wallGrid) { scene.remove(wallGrid); wallGrid.geometry.dispose(); }
+  const gsize = Math.ceil((span * 2) / 100) * 100;
+  wallGrid = new THREE.GridHelper(gsize, gsize / 50, 0x1d4a52, 0x16191d);
+  wallGrid.rotation.x = Math.PI / 2;
+  wallGrid.position.set(cx, cy, -0.2);
+  scene.add(wallGrid);
+
+  sun.position.set(x0 + w * 0.2 + span, y0 + h + span, span * 1.5);
+  rim.position.set(x0 - span * 1.5, y0 + h * 0.7, span * 0.6);
+  fogSpan = span;
+  sun.target.position.set(cx, cy, 0);
+  const sc = sun.shadow.camera;
+  sc.left = sc.bottom = -span * 1.2;
+  sc.right = sc.top = span * 1.2;
+  sc.near = 1; sc.far = span * 6;
+  sc.updateProjectionMatrix();
 }
 
 // 尖嘴瓶：直的瓶身、圓弧瓶肩、比瓶身細的瓶蓋、尖嘴（照常見的尖嘴擠瓶比例），沿著傾斜方向擺
@@ -323,6 +334,7 @@ function mountZ() { return rack.layout.inset + rack.layout.t + 0.5; }
 
 function buildMountSpheres() {
   disposeGroup(mountsGroup);
+  if (mode === 'combo') return;
   const L = rack.layout;
   const rad = Math.max(5, Math.max(L.totalW, L.totalH) * 0.012);
   for (const m of state.mounts) {
@@ -440,6 +452,7 @@ const alignText = { left: '靠左', center: '置中', right: '靠右' };
 /** 選取的名牌：橘球＝移動、左右藍球＝拉寬窄、上方藍球＝拉高，外加虛線外框與尺寸 */
 function buildSignHandles() {
   disposeGroup(handlesGroup);
+  if (mode === 'combo') return;
   handlesGroup.position.x = 0;
   const part = selectedSignPart();
   if (!part || state.explode > 0) return;
@@ -691,7 +704,9 @@ function updateHint() {
   const el = $('hint');
   if (!el) return;
   let html;
-  if (state.selectedSign) {
+  if (mode === 'combo') {
+    html = coarsePointer ? '<b>組合擺放</b>點一下架子選取，再拖到另一座上面或旁邊' : '<b>組合擺放</b>拖動架子，靠近另一座會自動貼到上面或旁邊 · Delete 拿掉';
+  } else if (state.selectedSign) {
     const lab = state.selectedSign.key !== 'top';
     html = lab
       ? '<b>顏料名牌 · 全部連動</b>' + (coarsePointer ? '拖球或用下面的面板調' : '拖球或用下面的面板調 · 雙擊還原 · Esc 取消')
@@ -709,7 +724,7 @@ function updateHint() {
   el.innerHTML = html;
   el.classList.remove('fade');
   clearTimeout(hintTimer);
-  if (!state.selectedSign && state.selected == null && !state.selectedGap) hintTimer = setTimeout(() => el.classList.add('fade'), 6000);
+  if (mode !== 'combo' && !state.selectedSign && state.selected == null && !state.selectedGap) hintTimer = setTimeout(() => el.classList.add('fade'), 6000);
 }
 
 // ---------- 選取面板：精確調整（手機也好操作） ----------
@@ -869,22 +884,22 @@ const lineMats = {
   edge: new THREE.LineDashedMaterial({ color: 0x4ef0ff, dashSize: 4, gapSize: 4, depthTest: false, transparent: true }),
 };
 
-function addLine(a, b, mat, text, cls) {
+function addLine(a, b, mat, text, cls, group = overlayGroup) {
   const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...a), new THREE.Vector3(...b)]);
   const line = new THREE.Line(g, mat);
   line.renderOrder = 9;
   if (mat.isLineDashedMaterial) line.computeLineDistances();
-  overlayGroup.add(line);
+  group.add(line);
   if (text) {
     const l = label(text, cls);
     l.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
-    overlayGroup.add(l);
+    group.add(l);
   }
 }
 
 function updateOverlay() {
   disposeGroup(overlayGroup);
-  if (!rack) return;
+  if (!rack || mode === 'combo') return; // 組合擺放有自己的尺寸線（文字標籤不會跟著群組隱藏，所以直接不畫）
   const L = rack.layout;
   const z = mountZ();
 
@@ -965,7 +980,7 @@ const fieldHTML = (spec, value, extra = '') => `
 
 function renderParams() {
   const root = $('params');
-  root.innerHTML = `
+  root.innerHTML = `<a class="combo-link" href="#/combo">跟其他架子擺在一起看 →</a>
     <div class="param-block">${T.BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key])).join('')}
       ${T.LINKED_BASIC_SPEC.map((s) => fieldHTML(s, state.params[s.key], 'data-adv="1"')).join('')}</div>
     <h3>加工與五金</h3>
@@ -1272,8 +1287,9 @@ let lastPointerType = 'mouse';
 renderer.domElement.addEventListener('pointerdown', (e) => {
   pointers.add(e.pointerId);
   lastPointerType = e.pointerType;
-  if (pointers.size > 1) { if (drag) cancelDrag(); downAt = null; return; }
+  if (pointers.size > 1) { if (drag) cancelDrag(); if (comboDrag) cancelComboDrag(); downAt = null; return; }
   if (e.button !== 0) return;
+  if (mode === 'combo') { comboDown(e); return; }
   const touch = e.pointerType !== 'mouse';
   setPointer(e);
   downAt = { x: e.clientX, y: e.clientY, touch };
@@ -1314,6 +1330,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 
 function pointerEnd(e) {
   pointers.delete(e.pointerId);
+  if (mode === 'combo') { comboUp(e); return; }
   if (drag) { if (e.type === 'pointercancel') cancelDrag(); else endDrag(); return; }
   const d = downAt;
   downAt = null;
@@ -1329,7 +1346,7 @@ renderer.domElement.addEventListener('pointerup', pointerEnd);
 renderer.domElement.addEventListener('pointercancel', pointerEnd);
 
 renderer.domElement.addEventListener('dblclick', (e) => {
-  if (lastPointerType !== 'mouse') return; // 觸控連點容易誤觸，改用「新增掛點」按鈕
+  if (lastPointerType !== 'mouse' || mode === 'combo') return; // 觸控連點容易誤觸，改用「新增掛點」按鈕
   setPointer(e);
   const hit = raycaster.intersectObjects(partsGroup.children, true).find((h) => h.object.isMesh);
   const part = hit?.object.userData.part;
@@ -1347,6 +1364,7 @@ function setHovered(mesh) {
   if (hovered) hovered.material = hoverMat;
 }
 renderer.domElement.addEventListener('pointermove', (e) => {
+  if (mode === 'combo') { comboMove(e); return; }
   if (drag) { setPointer(e); moveDrag(); hideTooltip(); return; }
   if (e.pointerType !== 'mouse' || hoverPending) return;
   hoverPending = true;
@@ -1369,6 +1387,11 @@ renderer.domElement.addEventListener('pointerleave', () => { hideTooltip(); setH
 
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (mode === 'combo') {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && comboSel != null) removeComboItem(comboSel);
+    if (e.key === 'Escape') { comboSel = null; renderCombo(); }
+    return;
+  }
   if (e.key === 'Delete' || e.key === 'Backspace') {
     if (state.selected != null) removeMount(state.selected);
     else if (state.selectedSign) {
@@ -1408,9 +1431,16 @@ function markView(kind) {
 }
 
 /** 讓整座木架放進可見區域；kind 為 null 時保留目前的觀看方向，只調整距離 */
-function setView(kind, { intro = false, instant = false } = {}) {
+function viewBounds() {
+  if (mode === 'combo' && combo) return combo.analysis.bounds;
   const L = rack.layout;
-  const c = new THREE.Vector3(L.totalW / 2, L.totalH / 2, L.sideDepth / 2);
+  return { x0: 0, y0: 0, w: L.totalW, h: L.totalH, d: L.sideDepth };
+}
+
+function setView(kind, { intro = false, instant = false } = {}) {
+  const B = viewBounds();
+  const L = { totalW: Math.max(B.w, 100), totalH: Math.max(B.h, 100), sideDepth: Math.max(B.d, 20) };
+  const c = new THREE.Vector3(B.x0 + L.totalW / 2, B.y0 + L.totalH / 2, L.sideDepth / 2);
   // 依畫面直橫比讓整座木架放得進視野（手機直向時水平視角較窄）
   const tv = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
   const vfov = 2 * Math.atan(tv * fracTarget);
@@ -1435,8 +1465,8 @@ $('view-iso').onclick = () => setView('iso');
 $('view-side').onclick = () => setView('side');
 $('show-cans').checked = state.showCans;
 $('show-dims').checked = state.showDims;
-$('show-cans').onchange = (e) => { state.showCans = e.target.checked; applyExplode(); saveState(); };
-$('show-dims').onchange = (e) => { state.showDims = e.target.checked; updateOverlay(); saveState(); };
+$('show-cans').onchange = (e) => { state.showCans = e.target.checked; if (mode === 'combo') renderCombo(); else applyExplode(); saveState(); };
+$('show-dims').onchange = (e) => { state.showDims = e.target.checked; if (mode === 'combo') renderCombo(); else updateOverlay(); saveState(); };
 let explodeTarget = 0;
 $('explode').onchange = (e) => {
   explodeTarget = e.target.checked ? 1 : 0;
@@ -1861,7 +1891,7 @@ function escapeAttr(s) {
 function saveState() {
   state.byType[state.type] = { params: state.params, mounts: state.mounts, nextId: state.nextId };
   const data = (nameplate) => JSON.stringify({
-    type: state.type, byType: state.byType, showCans: state.showCans, showDims: state.showDims, nameplate, labels: state.labels,
+    type: state.type, byType: state.byType, showCans: state.showCans, showDims: state.showDims, nameplate, labels: state.labels, combo: state.combo,
   });
   try {
     localStorage.setItem(STORE_KEY, data(state.nameplate));
@@ -1884,6 +1914,10 @@ function loadState() {
       state.params = normalizeParams(cur.params || {});
       state.mounts = Array.isArray(cur.mounts) ? cur.mounts : [];
       state.nextId = cur.nextId || state.mounts.reduce((a, m) => Math.max(a, m.id + 1), 1);
+      if (d.combo && Array.isArray(d.combo.items)) {
+        state.combo = { items: d.combo.items.filter((it) => TYPES[it.type] && Number.isFinite(it.x) && Number.isFinite(it.y)), nextId: d.combo.nextId || 1 };
+        state.combo.nextId = Math.max(state.combo.nextId, ...state.combo.items.map((it) => it.id + 1));
+      }
       state.showCans = d.showCans ?? true;
       state.showDims = d.showDims ?? true;
       if (d.nameplate && typeof d.nameplate === 'object') state.nameplate = { ...state.nameplate, ...d.nameplate };
@@ -2009,6 +2043,272 @@ renderer.setAnimationLoop((now) => {
   labelRenderer.render(scene, camera);
 });
 
+// ---------- 組合擺放 ----------
+// 不同類型的架子放在同一面牆上：每座用各自編輯器裡的設計，拖動時會貼齊；
+// 自動判斷上下疊、左右並排接不接得起來，接不起來時給調整方法。
+const comboGroup = new THREE.Group();
+scene.add(comboGroup);
+let comboSel = null, comboDrag = null, comboDown0 = null;
+const comboLineMat = new THREE.LineDashedMaterial({ color: 0x4ef0ff, dashSize: 8, gapSize: 5, depthTest: false, transparent: true });
+
+/** 某種架子目前的設計：編輯器裡存的參數與掛點；沒開過的類型用預設值＋目前的共用參數 */
+function comboRack(type) {
+  const Ty = TYPES[type];
+  const saved = type === state.type ? { params: state.params, mounts: state.mounts } : state.byType[type];
+  const shared = Object.fromEntries(SHARED_KEYS.map((k) => [k, state.params[k]]));
+  const params = Ty.normalizeParams(saved?.params || { ...Ty.DEFAULTS, ...shared });
+  const mounts = saved?.mounts || autoMounts(Ty.derive(params)).map((m, k) => ({ id: k + 1, ...m }));
+  const K = params.kinds;
+  const on = (k) => state.labels.items[k]?.on !== false;
+  const labelsOn = state.labels.enabled && [...Array(K).keys()].some(on);
+  return Ty.build({ ...params, labelsOn, labelH: state.labels.height }, mounts, {
+    nameplate: { ...state.nameplate, art: artwork.art },
+    labels: { ...state.labels, items: Array.from({ length: K }, (_, k) => ({ on: on(k), art: artCache.get(`label:${k}`)?.art || null })) },
+  });
+}
+
+/** 同一類型放了好幾座時加上編號 */
+function comboName(it) {
+  const same = state.combo.items.filter((q) => q.type === it.type);
+  return TYPES[it.type].name + (same.length > 1 ? ` ${same.indexOf(it) + 1}` : '');
+}
+
+function computeCombo() {
+  const racks = new Map();
+  for (const it of state.combo.items) if (!racks.has(it.type)) racks.set(it.type, comboRack(it.type));
+  const blocks = state.combo.items.map((it) => blockOf(it, racks.get(it.type), comboName(it)));
+  combo = { racks, blocks, analysis: analyzeCombo(blocks) };
+}
+
+function renderCombo() {
+  computeCombo();
+  const { racks, blocks, analysis } = combo;
+  disposeGroup(comboGroup);
+  for (const it of state.combo.items) {
+    const r = racks.get(it.type), b = blocks.find((q) => q.id === it.id);
+    const g = new THREE.Group();
+    g.position.set(it.x, it.y, 0);
+    g.userData.comboId = it.id;
+    // 上面疊了東西：頂蓋與頂端名牌拿掉，連接板改接上面那座
+    const capless = analysis.covered.has(it.id);
+    for (const part of r.parts) {
+      if (capless && (part.kind === 'capside' || part.kind === 'top' || part.kind === 'nameplate')) continue;
+      g.add(partMesh(part));
+    }
+    if (state.showCans) for (const c of r.items) g.add(itemMesh(c));
+    // 名稱標籤；選取的那座多一圈虛線外框
+    const top = b.H + (capless ? 0 : b.capH);
+    const tag = label(`${b.name} · ${fmt(b.W)}×${fmt(top)}`, it.id === comboSel ? 'sign-tag' : 'soft');
+    tag.position.set(b.W / 2, top + 18, b.D);
+    g.add(tag);
+    if (it.id === comboSel) {
+      const pts = [[0, 0], [b.W, 0], [b.W, top], [0, top], [0, 0]].map(([u, v]) => new THREE.Vector3(u, v, b.D + 2));
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), comboLineMat);
+      line.computeLineDistances();
+      line.renderOrder = 11;
+      g.add(line);
+    }
+    comboGroup.add(g);
+  }
+  // 整體尺寸
+  const B = analysis.bounds;
+  if (state.showDims && blocks.length) {
+    const off = Math.max(25, B.w * 0.04), zf = B.d;
+    addLine([B.x0, B.y0 - off, zf], [B.x0 + B.w, B.y0 - off, zf], lineMats.dim, `寬 ${fmt(B.w)}`, '', comboGroup);
+    addLine([B.x0 - off, B.y0, zf], [B.x0 - off, B.y0 + B.h, zf], lineMats.dim, `高 ${fmt(B.h)}`, '', comboGroup);
+  }
+  placeWall(B.x0, B.y0, Math.max(B.w, 300), Math.max(B.h, 300));
+  renderComboPanel();
+  updateHint();
+}
+
+const levelIcon = { ok: '✓', warn: '!', bad: '✕' };
+function renderComboPanel() {
+  const { blocks, analysis } = combo;
+  const B = analysis.bounds;
+  if (!$('dim-w')) $('summary').innerHTML = `<div class="dims"><b id="dim-w">0</b><i>×</i><b id="dim-h">0</b><i>×</i><b id="dim-d">0</b><span>MM</span></div><div class="meta"></div>`;
+  countTo($('dim-w'), B.w);
+  countTo($('dim-h'), B.h);
+  countTo($('dim-d'), B.d);
+  $('summary').querySelector('.meta').innerHTML = `<span><b>${blocks.length}</b> 座架子</span><span>整體外框</span>`;
+  $('warnings').innerHTML = '';
+  $('combo-add').innerHTML = TYPE_LIST.map((t) => `<button data-combo-add="${t.id}">＋ ${t.name}</button>`).join('');
+  $('combo-list').innerHTML = blocks.length ? blocks.map((b) => `
+    <div class="combo-row${b.id === comboSel ? ' selected' : ''}" data-combo-pick="${b.id}">
+      <div><div class="name">${escapeAttr(b.name)}</div>
+        <div class="sub">${fmt(b.W)} × ${fmt(b.H + (analysis.covered.has(b.id) ? 0 : b.capH))} × ${fmt(b.D)} mm · 位置 ${fmt(b.x)}, ${fmt(b.y)}</div></div>
+      <a class="button ghost" href="#/${b.type}" title="改這種架子的設計">編輯</a>
+      <button class="ghost" data-combo-del="${b.id}" title="拿掉" aria-label="拿掉 ${escapeAttr(b.name)}">✕</button>
+    </div>`).join('') : '<p class="hint">牆上還沒有架子，用上面的按鈕加一座。</p>';
+  const rs = analysis.results;
+  $('combo-report').innerHTML = rs.length ? rs.map((r, k) => `
+    <div class="combo-check ${r.level}"><i>${levelIcon[r.level]}</i><div><p>${escapeAttr(r.text)}</p>
+      ${r.fixes.map((f, n) => `<button class="${r.level === 'bad' ? 'primary' : ''}" data-combo-fix="${k}:${n}">${escapeAttr(f.label)}</button>`).join('')}</div></div>`).join('')
+    : `<p class="hint">${blocks.length > 1 ? '架子之間沒有貼在一起，各自掛牆。拖近另一座會自動貼到上面或旁邊。' : '加兩座以上，拖到彼此上面或旁邊，這裡會說明接不接得起來。'}</p>`;
+}
+
+/** 套用建議：調模組寬度（存回那種架子的設計）或移動位置 */
+function applyComboFix(f) {
+  if (f.kind === 'width') {
+    const target = f.type === state.type ? state.params : (state.byType[f.type] ||= { params: { ...TYPES[f.type].DEFAULTS } }).params;
+    target.moduleW = f.moduleW;
+    if (f.type === state.type && state.byType[f.type]) state.byType[f.type].params = state.params;
+  } else if (f.kind === 'move') {
+    const it = state.combo.items.find((q) => q.id === f.id);
+    if (it) Object.assign(it, { x: f.x, y: f.y });
+  }
+  saveState();
+  renderCombo();
+}
+
+function addComboItem(type) {
+  computeCombo();
+  // 放在最右邊那座的右邊，下緣貼地
+  const right = combo.blocks.reduce((m, b) => Math.max(m, b.x + b.W), 0);
+  const it = { id: state.combo.nextId++, type, x: combo.blocks.length ? right + 60 : 0, y: 0 };
+  state.combo.items.push(it);
+  comboSel = it.id;
+  saveState();
+  renderCombo();
+  setView(currentView || 'iso');
+}
+
+function removeComboItem(id) {
+  state.combo.items = state.combo.items.filter((it) => it.id !== id);
+  if (comboSel === id) comboSel = null;
+  saveState();
+  renderCombo();
+}
+
+/** 快速排列：依目前的高低（或左右）順序全部疊成一直排，或全部並排、下緣對齊 */
+function arrangeCombo(kind) {
+  computeCombo();
+  const order = [...combo.blocks].sort((a, b) => (kind === 'stack' ? a.y - b.y || a.x - b.x : a.x - b.x || a.y - b.y));
+  let at = 0;
+  for (const b of order) {
+    const it = state.combo.items.find((q) => q.id === b.id);
+    if (kind === 'stack') { Object.assign(it, { x: 0, y: at }); at += b.H; } else { Object.assign(it, { x: at, y: 0 }); at += b.W; }
+  }
+  saveState();
+  renderCombo();
+  setView(currentView || 'iso');
+}
+
+/** 第一次進來：顏料罐架在下、斜瓶架疊在上面，直接看到寬度要不要調 */
+function defaultCombo() {
+  const can = comboRack('paint-can');
+  state.combo.items = [
+    { id: 1, type: 'paint-can', x: 0, y: 0 },
+    { id: 2, type: 'slant-bottle', x: 0, y: can.layout.my * can.layout.H },
+  ];
+  state.combo.nextId = 3;
+}
+
+function enterCombo() {
+  if (mode !== 'combo') {
+    mode = 'combo';
+    document.body.classList.add('combo-mode');
+    clearSelection();
+    for (const g of [partsGroup, cansGroup, mountsGroup, overlayGroup, handlesGroup]) g.visible = false;
+    for (const g of [mountsGroup, overlayGroup, handlesGroup]) disposeGroup(g);
+    if (state.explode) { explodeTarget = 0; $('explode').checked = false; setExplode(0); }
+    hideTooltip();
+  }
+  if (!state.combo.items.length) defaultCombo();
+  renderCombo();
+  setView('iso', { intro: true });
+}
+
+function exitCombo() {
+  if (mode !== 'combo') return;
+  mode = 'edit';
+  document.body.classList.remove('combo-mode');
+  disposeGroup(comboGroup);
+  comboSel = null;
+  partsGroup.visible = mountsGroup.visible = overlayGroup.visible = handlesGroup.visible = true;
+  $('summary').innerHTML = '';
+  rebuild();
+  applyExplode();
+  setView(currentView || 'iso');
+}
+
+function comboHit(e) {
+  setPointer(e);
+  const hit = raycaster.intersectObjects(comboGroup.children, true).find((q) => q.object.isMesh);
+  let o = hit?.object;
+  while (o && o.userData.comboId == null) o = o.parent;
+  return o ? o.userData.comboId : null;
+}
+
+function comboDown(e) {
+  const id = comboHit(e);
+  const touch = e.pointerType !== 'mouse';
+  comboDown0 = { x: e.clientX, y: e.clientY, touch, id };
+  // 滑鼠直接拖；觸控要先點選那座才能拖（跟掛點一樣，避免轉視角時誤拖）
+  if (id == null || (touch && id !== comboSel)) return;
+  const it = state.combo.items.find((q) => q.id === id);
+  const plane = planeAt(0);
+  comboDrag = { it, plane, start: pointOn(plane), x0: it.x, y0: it.y, moved: false };
+  if (!comboDrag.start) { comboDrag = null; return; }
+  comboSel = id;
+  orbit.enabled = false;
+  renderer.domElement.setPointerCapture(e.pointerId);
+  navigator.vibrate?.(8);
+}
+
+function comboMove(e) {
+  if (!comboDrag) return;
+  setPointer(e);
+  const p = pointOn(comboDrag.plane);
+  if (!p) return;
+  const d = comboDrag;
+  const b = combo.blocks.find((q) => q.id === d.it.id);
+  const others = combo.blocks.filter((q) => q.id !== d.it.id);
+  const pos = snapBlock(b, others, Math.round(d.x0 + p.x - d.start.x), Math.round(d.y0 + p.y - d.start.y));
+  d.it.x = pos.x; d.it.y = pos.y;
+  d.moved = true;
+  const g = comboGroup.children.find((q) => q.userData.comboId === d.it.id);
+  if (g) g.position.set(pos.x, pos.y, 0);
+}
+
+function cancelComboDrag() {
+  const d = comboDrag;
+  comboDrag = null;
+  orbit.enabled = true;
+  Object.assign(d.it, { x: d.x0, y: d.y0 });
+  renderCombo();
+}
+
+function comboUp(e) {
+  const d = comboDrag, d0 = comboDown0;
+  comboDrag = null; comboDown0 = null;
+  orbit.enabled = true;
+  if (d) {
+    if (e.type === 'pointercancel') { Object.assign(d.it, { x: d.x0, y: d.y0 }); }
+    else if (d.moved) saveState();
+    renderCombo();
+    return;
+  }
+  if (!d0 || e.type === 'pointercancel') return;
+  if (Math.hypot(e.clientX - d0.x, e.clientY - d0.y) >= (d0.touch ? 10 : 5)) return;
+  comboSel = d0.id; // 點空白處取消選取
+  renderCombo();
+}
+
+$('combo-panel').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-combo-add], [data-combo-del], [data-combo-fix], [data-combo-pick], #combo-stack, #combo-row');
+  if (!t || t.tagName === 'A') return;
+  if (t.dataset.comboAdd) addComboItem(t.dataset.comboAdd);
+  else if (t.dataset.comboDel) removeComboItem(Number(t.dataset.comboDel));
+  else if (t.dataset.comboFix) {
+    const [k, n] = t.dataset.comboFix.split(':').map(Number);
+    const f = combo.analysis.results[k]?.fixes[n];
+    if (f) applyComboFix(f);
+  } else if (t.id === 'combo-stack') arrangeCombo('stack');
+  else if (t.id === 'combo-row') arrangeCombo('row');
+  else if (t.dataset.comboPick) { comboSel = Number(t.dataset.comboPick); renderCombo(); }
+});
+
 // ---------- 首頁與架子類型 ----------
 // 網址 #/類型 直接進該類型的編輯器；沒有指定就顯示首頁（後面的 3D 先用上次的類型建好）
 $('type-grid').innerHTML = TYPE_LIST.map((t, k) => `
@@ -2018,16 +2318,28 @@ $('type-grid').innerHTML = TYPE_LIST.map((t, k) => `
     <p>${t.summary}</p>
     <span class="type-go">開始設計 →</span>
   </a>`).join('') + `
-  <div class="type-card soon" style="animation-delay:${0.08 * TYPE_LIST.length + 0.1}s">
+  <a class="type-card combo-card" href="#/combo" style="animation-delay:${0.08 * TYPE_LIST.length + 0.1}s">
+    <div class="type-art"><svg viewBox="0 0 120 90"><rect x="24" y="44" width="72" height="38" rx="2"/><rect x="24" y="10" width="44" height="34" rx="2" class="fill"/><path d="M74 27h16M84 21l6 6-6 6"/></svg></div>
+    <div class="type-name">組合擺放</div>
+    <p>把不同的架子放在同一面牆上，看拼起來長怎樣、哪裡接得起來、哪裡要調整。</p>
+    <span class="type-go">開始擺 →</span>
+  </a>
+  <div class="type-card soon" style="animation-delay:${0.08 * TYPE_LIST.length + 0.18}s">
     <div class="type-art"><svg viewBox="0 0 120 90"><path d="M60 30v30M45 45h30"/></svg></div>
     <div class="type-name">更多架子</div>
     <p>筆刷架、噴罐架之類的，之後會用同一套接合加進來。</p>
   </div>`;
 function route() {
   const id = location.hash.replace(/^#\/?/, '');
-  const home = !TYPES[id];
+  const home = !TYPES[id] && id !== 'combo';
   $('home').hidden = !home;
   document.body.classList.toggle('at-home', home);
+  if (id === 'combo') {
+    enterCombo();
+    $('brand-type').textContent = '組合擺放';
+    return;
+  }
+  exitCombo();
   if (!home) switchType(id);
   $('brand-type').textContent = T.name;
 }
@@ -2036,6 +2348,7 @@ route();
 
 window.__rack = () => rack; // 除錯用
 window.__state = () => state;
+window.__combo = () => combo && { blocks: combo.blocks, results: combo.analysis.results.map((r) => r.level + ' ' + r.relation), sel: comboSel };
 window.__artUrl = () => artwork.dataUrl;
 // 除錯／瀏覽器測試用：名牌控制球位置、世界座標 → 螢幕座標
 window.__handles = () => handlesGroup.children.filter((o) => o.userData.handle).map((o) => ({ type: o.userData.handle, pos: o.position.toArray() }));
